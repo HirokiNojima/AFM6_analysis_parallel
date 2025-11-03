@@ -129,7 +129,7 @@ def main_analysis_workflow(
 # --- 実行ブロック ---
 if __name__ == '__main__':
     # 提供されたdata_input.pyの実行例にあるパスを使用 (コメントアウトを解除して使用)
-    folder_path = r"C:\Users\icell\Desktop\nojima_python\AFM6analysis_20251031\251103\1506_0" 
+    folder_path = r"C:\AFM6measurement\251103\1557_測定ストップ" 
     
     # 光てこ感度 [nm/V]
     invols_nm_per_volt = 100.0 

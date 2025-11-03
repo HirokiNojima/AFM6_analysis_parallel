@@ -13,28 +13,63 @@ def _analyze_single_curve_wrapper_joblib(
 ) -> List[AFMData]:
     """
     カーブインデックスのリストを受け取り、各インデックスでTDMSを読み込み、解析を行う。
+    失敗した場合は、nanで埋められたダミーオブジェクトを返す。
     """
     analyzer = AFM_Curve_analyzer()
     reader = DataReader() 
     results_list = []
     
     for index in index_chunk:
+        data_obj = None # ★ 初期化
         try:
+            # 1. 読み込み
             data_obj = reader.read_single_force_curve(
                 folder_path, 
                 index, 
                 metadata_ref
             )
+            # 2. 解析
             analyzer.analyze_single_curve(data_obj)
             
-            # ★★★ 施策 ★★★
-            # 解析が完了したら、メモリ削減のために不要な配列データを破棄する
+        except Exception as e:
+            print(f"⚠️ インデックス {index} の解析/読み込みに失敗 (エラー: {e})。NaNとして処理します。")
+            
+            # 読み込み自体が失敗した場合 (data_objがNoneのまま)
+            # プレースホルダーのダミーオブジェクトを作成する
+            if data_obj is None:
+                try:
+                    # メタデータから最低限の座標を取得
+                    xsensor = metadata_ref.get('xsensor', [0.0] * (index + 1))[index]
+                    ysensor = metadata_ref.get('ysensor', [0.0] * (index + 1))[index]
+                    
+                    # ダミーのAFMDataを生成 (中身はすべて nan で初期化済)
+                    data_obj = AFMData(
+                        raw_deflection=np.array([np.nan]), # 空配列の代わりにnan
+                        raw_ztip=np.array([np.nan]),
+                        raw_zsensor=np.array([np.nan]),
+                        metadata_ref=metadata_ref,
+                        folder_path=folder_path,
+                        hyst_curve=np.array([[np.nan, np.nan]]), # 空でない
+                        xsensor=xsensor,
+                        ysensor=ysensor
+                    )
+                except Exception as e_dummy:
+                    # メタデータも壊れている場合の究極のフォールバック
+                    print(f"❌ {index} のダミー作成失敗: {e_dummy}")
+                    data_obj = AFMData(np.array([np.nan]), np.array([np.nan]), np.array([np.nan]),
+                                       metadata_ref, folder_path, np.array([[np.nan, np.nan]]), 0.0, 0.0)
+
+            # (もし読み込みは成功し、解析だけ失敗した場合、
+            #  data_objはNoneではなく、各プロパティは初期値の np.nan のまま)
+        
+        # ★★★ 施策 ★★★
+        # 解析が完了したら (成功・失敗問わず) メモリを破棄
+        if data_obj:
             data_obj.clear_raw_data()
             
+            # ★ リストに追加 (失敗しても追加する)
             results_list.append(data_obj)
-        except Exception as e:
-            print(f"⚠️ インデックス {index} の解析をスキップしました (エラー: {e})")
-            
+        
     return results_list
 
 class AFM_Map_Analyzer_Joblib:
