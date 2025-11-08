@@ -36,7 +36,6 @@ def main_analysis_workflow(
     
     # InvOLSの単位をnm/Vから、DataReaderが要求するfloat値 (e.g., 100.0) として扱う
     # DataReader._parse_config内で [m/V] に変換される
-    
     base_dir = Path(folder_path)
     output_path = base_dir / output_dir_name
     os.makedirs(output_path, exist_ok=True)
@@ -53,7 +52,7 @@ def main_analysis_workflow(
     print(f"--- 📥 メタデータとカーブ総数の読み込み中 ---")
     try:
         data_reader = DataReader()
-        # 🌟 変更点 1: configを読み込み、カーブ総数とメタデータを取得
+        # configを読み込み、カーブ総数とメタデータを取得
         # AFMDataオブジェクトのリストは生成しない
         metadata = data_reader.read_config_only(folder_path, invols)
         if not metadata:
@@ -72,10 +71,10 @@ def main_analysis_workflow(
     try:
         map_analyzer = AFM_Map_Analyzer_Joblib(
             n_jobs=n_jobs,
-            folder_path=folder_path, # 🌟 変更点 2: フォルダパスをアナライザに渡す
-            metadata_ref=metadata    # 🌟 変更点 3: メタデータをアナライザに渡す
+            folder_path=folder_path, # フォルダパスをアナライザに渡す
+            metadata_ref=metadata    # メタデータをアナライザに渡す
         )
-        # 🌟 変更点 4: 実際のデータリストではなく、カーブの総数を渡す
+        # 実際のデータリストではなく、カーブの総数を渡す
         analyzed_data_list = map_analyzer.analyze_map_parallel(N_curves)
 
     except Exception as e:
@@ -128,11 +127,11 @@ def main_analysis_workflow(
 
 # --- 実行ブロック ---
 if __name__ == '__main__':
-    # 提供されたdata_input.pyの実行例にあるパスを使用 (コメントアウトを解除して使用)
-    folder_path = r"C:\AFM6measurement\251103\1557_測定ストップ" 
+    # データフォルダパス
+    folder_path = input("input data folder path: ")
     
     # 光てこ感度 [nm/V]
-    invols_nm_per_volt = 100.0 
+    invols_nm_per_volt = float(input("input InvOLS (nm/V): "))
     
     # 高解像度マップのグリッドサイズ
     map_grid_size = [100, 100] 
