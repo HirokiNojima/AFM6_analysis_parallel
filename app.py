@@ -1,7 +1,4 @@
 # ファイル名: napari_app.py
-# 実行方法: python napari_app.py
-# ★ 実行前に: pip install napari[pyqt5] napari-matplotlib nptdms scikit-learn
-
 import napari
 import numpy as np
 import os
@@ -233,7 +230,6 @@ class AFMViewer:
 
     def on_mouse_click(self, viewer, event):
         """
-        (★これがラグのないクリック処理)
         Napariビューアのマウスイベント(ドラッグ/プレス/リリース)を処理する。
         """
         # (a) 'mouse_press' (クリック開始) イベント以外は無視
@@ -267,8 +263,7 @@ class AFMViewer:
             self._update_text(idx)
             
         except Exception as e:
-            # (★修正) 座標範囲外クリックなどでKDTreeが失敗した場合は無視する
-            # print(f"クリック処理中にエラー: {e}") 
+            # 座標範囲外クリックなどでKDTreeが失敗した場合は無視する
             pass
 
     def get_clicked_curve_data_fast(self, click_x, click_y):
@@ -331,7 +326,7 @@ class AFMViewer:
         self.plot_ax.set_xlabel("Z Distance (nm)")
         self.plot_ax.set_ylabel("Force (nN)")
         
-        # (★修正) 凡例に白い背景色を指定する
+        # 凡例に白い背景色を指定する
         self.plot_ax.legend(facecolor='white') 
         self.plot_ax.grid(True)
         
@@ -353,7 +348,7 @@ Delta (nm): {results['delta'][idx] * 1e9:.2f}
 Hysteresis (fJ): {results['hysteresis_area'][idx] * 1e15:.2f}
 """
         self.text_label.setText(results_text)
-
+        
 # --- アプリケーションの実行 ---
 if __name__ == "__main__":
     
