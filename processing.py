@@ -90,22 +90,6 @@ class AFM_Curve_analyzer:
         """
         data_obj.cp_z_position = data_obj.z_distance[data_obj.contact_point_index]  # 接触点のZ位置 [m]
         
-    def analyze_for_display(self, data_obj: AFMData):
-        """
-        StreamlitのUI表示に必要な最小限の解析（カーブ補正と接触点計算）のみを行う。
-        ヤング率などの重い計算はすべてスキップする。
-        """
-        self._convert_def_to_force(data_obj)
-        self._calc_z_distance(data_obj)      # 必要 (z_distance のため)
-        self._force_correct(data_obj)      # 必要 (force_corrected のため)
-        self._calc_CPandRP(data_obj)         # 必要 (接触点プロットのため)
-        
-        # --- 以下の重い計算はすべてスキップ ---
-        # self._calc_topography(data_obj)
-        # self._calc_young_and_delta(data_obj)
-        # self._calc_peak_force(data_obj)
-        # self._calc_hyst_area(data_obj)
-        # self._calc_cp_z_position(data_obj)
 
 if __name__ == "__main__":
     # 動作確認用コード

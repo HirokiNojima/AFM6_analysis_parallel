@@ -9,7 +9,8 @@ import sys
 
 # --- GUI / Plotting ---
 from PyQt5.QtWidgets import (
-    QWidget, QVBoxLayout, QPushButton, QLabel, QFileDialog, QComboBox
+    QWidget, QVBoxLayout, QPushButton, QLabel, QFileDialog, QComboBox,
+    QSpinBox, QHBoxLayout, QCheckBox
 )
 from matplotlib.figure import Figure
 # napari-matplotlib プラグイン
@@ -69,6 +70,8 @@ class AFMViewer:
 
         # 3. Napariビューア本体を作成
         self.viewer = napari.Viewer()
+        # 現在表示中のフォースカーブのインデックス
+        self.current_display_idx = None
         
         # 4. カスタムGUIウィジェット（ボタン、プロット、テキスト）を作成してドッキング
         self._add_widgets()
@@ -94,6 +97,40 @@ class AFMViewer:
         self.map_selector.currentTextChanged.connect(self.display_map) # 選択変更時の動作を接続
         control_layout.addWidget(QLabel("表示するマップ:"))
         control_layout.addWidget(self.map_selector)
+
+        # フォースカーブのインデックス指定ウィジェット
+        idx_layout = QHBoxLayout()
+        idx_layout.addWidget(QLabel("Force Curve Index:"))
+        self.idx_spinbox = QSpinBox()
+        self.idx_spinbox.setMinimum(0)
+        self.idx_spinbox.setMaximum(0)  # ロード時に更新
+        self.idx_spinbox.setEnabled(False)
+        # 値が変更されたとき、指定インデックスのフォースカーブを表示
+        self.idx_spinbox.valueChanged.connect(self.on_idx_changed)
+        idx_layout.addWidget(self.idx_spinbox)
+        control_layout.addLayout(idx_layout)
+
+        # --- analyze_for_display の各ステップを切り替えるチェックボックス ---
+        control_layout.addWidget(QLabel("表示用解析ステップ:"))
+        self.chk_convert = QCheckBox("Deflection -> Force (convert)")
+        self.chk_convert.setChecked(True)
+        control_layout.addWidget(self.chk_convert)
+        self.chk_convert.stateChanged.connect(self.on_display_option_changed)
+
+        self.chk_zdist = QCheckBox("Calculate Z distance (z_distance)")
+        self.chk_zdist.setChecked(True)
+        control_layout.addWidget(self.chk_zdist)
+        self.chk_zdist.stateChanged.connect(self.on_display_option_changed)
+
+        self.chk_baseline = QCheckBox("Baseline correction (force_corrected)")
+        self.chk_baseline.setChecked(True)
+        control_layout.addWidget(self.chk_baseline)
+        self.chk_baseline.stateChanged.connect(self.on_display_option_changed)
+
+        self.chk_cp = QCheckBox("Find contact/retract points (CP/RP)")
+        self.chk_cp.setChecked(True)
+        control_layout.addWidget(self.chk_cp)
+        self.chk_cp.stateChanged.connect(self.on_display_option_changed)
         
         self.control_widget.setLayout(control_layout)
         self.viewer.window.add_dock_widget(self.control_widget, area='right', name='コントロール')
@@ -171,6 +208,16 @@ class AFMViewer:
             # (g) UIを更新
             self.map_selector.clear()
             self.map_selector.addItems(self.data["available_maps"])
+            # インデックス指定ウィジェットを有効化して範囲を設定
+            try:
+                n_curves = len(self.data["metadata"]["xsensor"])
+                if n_curves > 0:
+                    self.idx_spinbox.setMaximum(max(0, n_curves - 1))
+                    self.idx_spinbox.setValue(0)
+                    self.idx_spinbox.setEnabled(True)
+            except Exception:
+                # メタデータが未整備の場合はスキップ
+                pass
             # (ロードが完了したら自動的に最初のマップを表示)
             
         except Exception as e:
@@ -257,10 +304,28 @@ class AFMViewer:
             data_obj, idx = self.get_clicked_curve_data_fast(click_x, click_y)
             
             # (f) Matplotlibプロットを更新
+            # スピンボックスはクリックで更新された値を表示するが、
+            # valueChangedシグナルを発火させないよう一時的にブロックする
+            try:
+                self.idx_spinbox.blockSignals(True)
+                self.idx_spinbox.setValue(idx)
+            except Exception:
+                pass
+            finally:
+                try:
+                    self.idx_spinbox.blockSignals(False)
+                except Exception:
+                    pass
+
             self._update_plot(data_obj, idx)
             
             # (g) テキストを更新
             self._update_text(idx)
+            # 現在表示中のインデックスを記録
+            try:
+                self.current_display_idx = idx
+            except Exception:
+                pass
             
         except Exception as e:
             # 座標範囲外クリックなどでKDTreeが失敗した場合は無視する
@@ -303,33 +368,198 @@ class AFMViewer:
         )
         
         # (5) UI表示用の軽量解析を実行
-        self.analyzer.analyze_for_display(data_obj)
+        # 選択されたチェックボックスに従って解析を実行
+        self.analyze_for_display(data_obj)
         
         return data_obj, idx
+
+    def analyze_for_display(self, data_obj: AFMData):
+        """チェックボックスの設定に従って表示用の解析ステップを実行する。
+
+        依存関係を考慮して必要な前処理が自動的に呼ばれる。
+        (convert) -> (z_distance) -> (baseline) -> (CP/RP)
+        """
+        # convert: raw_deflection -> force
+        try:
+            if self.chk_convert.isChecked():
+                self.analyzer._convert_def_to_force(data_obj)
+            else:
+                # チェックが外れている場合は force を raw_deflection と同じにする
+                data_obj.force = data_obj.raw_deflection.copy()
+        except Exception:
+            # 保険: 例外は無視して続行
+            pass
+
+        # z_distance
+        try:
+            if self.chk_zdist.isChecked():
+                self.analyzer._calc_z_distance(data_obj)
+            else:
+                # チェックが外れている場合は z_distance を raw_ztip と同じにする
+                data_obj.z_distance = data_obj.raw_ztip.copy()
+        except Exception:
+            pass
+
+        # baseline (force_corrected) - depends on force
+        try:
+            if self.chk_baseline.isChecked():
+                # ensure force exists
+                if not hasattr(data_obj, 'force') or data_obj.force is None:
+                    self.analyzer._convert_def_to_force(data_obj)
+                self.analyzer._force_correct(data_obj)
+            else:
+                # チェックが外れている場合は force_corrected を force と同じにする
+                if hasattr(data_obj, 'force') and data_obj.force is not None:
+                    data_obj.force_corrected = data_obj.force.copy()
+        except Exception:
+            pass
+
+        # CP/RP - depends on force_corrected and z_distance
+        try:
+            if self.chk_cp.isChecked():
+                # ensure prerequisites
+                if not hasattr(data_obj, 'force_corrected') or data_obj.force_corrected is None:
+                    if not hasattr(data_obj, 'force') or data_obj.force is None:
+                        self.analyzer._convert_def_to_force(data_obj)
+                    self.analyzer._force_correct(data_obj)
+                if not hasattr(data_obj, 'z_distance') or data_obj.z_distance is None:
+                    self.analyzer._calc_z_distance(data_obj)
+                self.analyzer._calc_CPandRP(data_obj)
+        except Exception:
+            pass
+
+
+    def get_curve_data_by_index(self, idx):
+        """指定したインデックスのフォースカーブデータを取得して解析オブジェクトを返す"""
+        metadata = self.data["metadata"]
+        N_points = metadata['FCあたりのデータ取得点数']
+
+        start_idx = idx * N_points
+        end_idx = start_idx + N_points
+
+        deflection_data = self.data["deflection_ch"][start_idx:end_idx]
+        ZTip_input_data = self.data["ztip_ch"][start_idx:end_idx]
+        Zsensor_data = self.data["zsensor_ch"][start_idx:end_idx]
+
+        xsensor = metadata['xsensor'][idx]
+        ysensor = metadata['ysensor'][idx]
+
+        hyst_curve = self.data["hyst_curve"]
+
+        data_obj = AFMData(
+            raw_deflection=deflection_data,
+            raw_ztip=ZTip_input_data,
+            raw_zsensor=Zsensor_data,
+            metadata_ref=metadata,
+            folder_path=self.data["folder_path"],
+            hyst_curve=hyst_curve,
+            xsensor=xsensor,
+            ysensor=ysensor
+        )
+
+        # 選択されたチェックボックスに従って解析を実行
+        self.analyze_for_display(data_obj)
+        return data_obj, idx
+
+    def on_idx_changed(self, value):
+        """スピンボックスでインデックスが変更されたときのハンドラ"""
+        if not self.data.get("kdtree"):
+            return
+        try:
+            data_obj, idx = self.get_curve_data_by_index(int(value))
+            self._update_plot(data_obj, idx)
+            self._update_text(idx)
+            # 現在表示中のインデックスを更新
+            self.current_display_idx = idx
+        except Exception as e:
+            # 範囲外や読み込み失敗はログに出す（無言で失敗しないようにする）
+            print(f"on_idx_changed error for idx={value}: {e}")
+            self.text_label.setText(f"指定インデックスの読み込みに失敗しました:\n{e}")
+            return
+
+    def on_display_option_changed(self, state):
+        """チェックボックスの設定が変わったときに、現在表示中のインデックスを再描画する"""
+        # 優先: current_display_idx があればそれを使う。なければスピンボックス値（有効時）を使う
+        idx = None
+        if getattr(self, 'current_display_idx', None) is not None:
+            idx = self.current_display_idx
+        elif hasattr(self, 'idx_spinbox') and self.idx_spinbox.isEnabled():
+            idx = int(self.idx_spinbox.value())
+
+        if idx is None:
+            return
+
+        try:
+            data_obj, _ = self.get_curve_data_by_index(int(idx))
+            self._update_plot(data_obj, int(idx))
+            self._update_text(int(idx))
+            # 保持
+            self.current_display_idx = int(idx)
+        except Exception as e:
+            print(f"on_display_option_changed: failed to redraw idx={idx}: {e}")
+            # GUIにエラーを表示しておく
+            try:
+                self.text_label.setText(f"表示更新に失敗しました:\n{e}")
+            except Exception:
+                pass
 
     def _update_plot(self, data_obj, idx):
         """MatplotlibのAxesを更新する"""
         self.plot_ax.clear() # 既存のプロットを消去
-        
-        z_nm = data_obj.z_distance * 1e9
-        force_nN = data_obj.force_corrected * 1e9
-        self.plot_ax.plot(z_nm, force_nN, label="Force Curve")
-        
-        cp_idx = data_obj.contact_point_index
-        if cp_idx != -1:
-            self.plot_ax.scatter(
-                z_nm[cp_idx], force_nN[cp_idx], 
-                color='red', s=50, label="Contact Point", zorder=5
-            )
+        # X軸: 優先順位 z_distance -> raw_ztip
+        x_arr = None
+        if self.chk_zdist.isChecked():
+            x_arr = data_obj.z_distance * 1e9
+            x_label = "Z Distance (nm)"
+            x_scale = 1e9
+        else:
+            x_arr = data_obj.raw_ztip
+            x_label = "Z Tip (raw, V)"
+            x_scale = 1.0
+
+
+        # Y軸: 優先順位 force_corrected -> force -> raw_deflection
+        y_arr = None
+        if self.chk_convert.isChecked():
+            y_arr = data_obj.force * 1e9
+            y_label = "Force (nN)"
+            y_scale = 1e9
+        else:
+            y_arr = data_obj.raw_deflection
+            y_label = "Deflection (raw, V)"
+            y_scale = 1.0
+
+
+        # スケールしてプロット
+        try:
+            x_plot = x_arr * x_scale
+            y_plot = y_arr * y_scale
+            self.plot_ax.plot(x_plot, y_plot, label="Force Curve")
+        except Exception as e:
+            # プロットできない場合はログ出力して終了
+            print(f"_update_plot: failed to plot data for idx={idx}: {e}")
+            return
+
+        # Contact point があれば表示（存在チェック）
+        cp_idx = getattr(data_obj, 'contact_point_index', -1)
+        try:
+            if cp_idx is not None and cp_idx != -1 and cp_idx < len(x_plot):
+                self.plot_ax.scatter(
+                    x_plot[cp_idx], y_plot[cp_idx],
+                    color='red', s=50, label="Contact Point", zorder=5
+                )
+        except Exception:
+            # 無視して続行
+            pass
             
         self.plot_ax.set_title(f"Force Curve (Index: {idx})")
-        self.plot_ax.set_xlabel("Z Distance (nm)")
-        self.plot_ax.set_ylabel("Force (nN)")
-        
+        self.plot_ax.set_xlabel(x_label)
+        self.plot_ax.set_ylabel(y_label)
+
         # 凡例に白い背景色を指定する
         self.plot_ax.legend(facecolor='white') 
         self.plot_ax.grid(True)
-        
+
         # Matplotlibのキャンバスを再描画
         self.plot_fig.canvas.draw_idle()
 
