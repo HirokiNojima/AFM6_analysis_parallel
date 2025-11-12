@@ -12,6 +12,7 @@ from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QPushButton, QLabel, QFileDialog, QComboBox,
     QSpinBox, QHBoxLayout, QCheckBox
 )
+from PyQt5.QtCore import QTimer
 from matplotlib.figure import Figure
 # napari-matplotlib プラグイン
 from napari_matplotlib.base import NapariMPLWidget
@@ -274,6 +275,134 @@ class AFMViewer:
             scale=scale,
             translate=translate
         )
+        # 保存しておく: マップのグリッドサイズ/スケール/translate を later highlight に使う
+        try:
+            self.last_map_grid_size = grid_size
+            self.last_map_scale = scale
+            self.last_map_translate = translate
+        except Exception:
+            self.last_map_grid_size = None
+            self.last_map_scale = None
+            self.last_map_translate = None
+        # マップを切り替えた場合は、もし現在表示中の idx があればそれをハイライト
+        try:
+            if getattr(self, 'current_display_idx', None) is not None:
+                self.highlight_idx_on_map(self.current_display_idx)
+        except Exception:
+            pass
+
+    def highlight_idx_on_map(self, idx):
+        """マップ上に現在表示中の idx に対応する点をハイライト表示する。
+
+        Napari の座標系は (y, x) の順を使うため、self.data['xy_coords_um'] の
+        (x, y) を入れ替えて渡す。
+        """
+        try:
+            coords = self.data.get('xy_coords_um')
+            if coords is None or getattr(coords, 'size', 0) == 0:
+                return
+            if idx < 0 or idx >= len(coords):
+                return
+            x_um = float(coords[idx, 0])
+            y_um = float(coords[idx, 1])
+            # Use world coordinates (y, x) in same units as the image translate/scale
+            # This is more robust across map changes: provide world coords and let Napari
+            # place the points in the shared world coordinate system.
+            point = [[y_um, x_um]]
+            point_scale = None
+
+            # If a layer named 'Selected Point' exists, update it; otherwise add new points layer
+            if 'Selected Point' in self.viewer.layers:
+                layer = self.viewer.layers['Selected Point']
+                try:
+                    layer.data = point
+                except Exception:
+                    # Fall back to removing and re-adding layer
+                    try:
+                        self.viewer.layers.remove(layer)
+                    except Exception:
+                        pass
+                    self.viewer.add_points(point, name='Selected Point', size=3, face_color='red')
+            else:
+                self.viewer.add_points(point, name='Selected Point', size=3, face_color='red')
+            # ensure the Selected Point layer is on top (deferred)
+            try:
+                QTimer.singleShot(0, self.ensure_selected_point_on_top)
+            except Exception:
+                pass
+        except Exception as e:
+            print(f"highlight_idx_on_map error idx={idx}: {e}")
+
+    def ensure_selected_point_on_top(self):
+        """Remove and re-add Selected Point so it becomes the last layer (topmost).
+
+        This is a robust way to ensure the point is drawn above image layers across
+        different Napari versions and rendering backends.
+        """
+        try:
+            if 'Selected Point' not in self.viewer.layers:
+                return
+            layer = self.viewer.layers['Selected Point']
+            # capture current data and some display properties
+            data = None
+            try:
+                data = layer.data.copy()
+            except Exception:
+                data = layer.data
+            # reduce marker size to roughly 1/3 for visibility
+            try:
+                orig_size = getattr(layer, 'size', 12)
+                size = max(1, int(orig_size / 3))
+            except Exception:
+                size = 3
+            face_color = None
+            try:
+                face_color = layer.face_color
+            except Exception:
+                face_color = 'red'
+
+            # remove and re-add (defer actual removal to next loop to be safe)
+            def readd():
+                try:
+                    if 'Selected Point' in self.viewer.layers:
+                        try:
+                            self.viewer.layers.remove(self.viewer.layers['Selected Point'])
+                        except Exception:
+                            pass
+                    # re-add as last layer
+                    self.viewer.add_points(data, name='Selected Point', size=size, face_color=face_color)
+                except Exception:
+                    pass
+
+            QTimer.singleShot(0, readd)
+        except Exception:
+            pass
+
+    def _bring_layer_to_front(self, layer_name: str):
+        """指定したレイヤーをレイヤーリストの最前面（上）に移動する。"""
+        try:
+            layer = self.viewer.layers[layer_name]
+            # find current index and move to last position
+            layers_list = list(self.viewer.layers)
+            cur_idx = layers_list.index(layer)
+            # Move to last index so it's drawn on top (Napari draws later layers above earlier ones)
+            dest_idx = len(layers_list) - 1
+            if cur_idx != dest_idx:
+                # Defer the move to the Qt event loop to avoid mutating the model during paint
+                def do_move():
+                    try:
+                        layers_list2 = list(self.viewer.layers)
+                        if layer in layers_list2:
+                            cur2 = layers_list2.index(layer)
+                            dest2 = len(layers_list2) - 1
+                            if cur2 != dest2:
+                                self.viewer.layers.move(cur2, dest2)
+                    except Exception:
+                        pass
+
+                QTimer.singleShot(0, do_move)
+        except Exception:
+            pass
 
     def on_mouse_click(self, viewer, event):
         """
@@ -318,12 +447,18 @@ class AFMViewer:
                     pass
 
             self._update_plot(data_obj, idx)
-            
+
             # (g) テキストを更新
             self._update_text(idx)
             # 現在表示中のインデックスを記録
             try:
                 self.current_display_idx = idx
+            except Exception:
+                pass
+
+            # マップ上に選択点をハイライト
+            try:
+                self.highlight_idx_on_map(idx)
             except Exception:
                 pass
             
@@ -471,6 +606,11 @@ class AFMViewer:
             self._update_text(idx)
             # 現在表示中のインデックスを更新
             self.current_display_idx = idx
+            # マップ上に選択点をハイライト
+            try:
+                self.highlight_idx_on_map(idx)
+            except Exception as e:
+                print(f"on_idx_changed: highlight failed for idx={idx}: {e}")
         except Exception as e:
             # 範囲外や読み込み失敗はログに出す（無言で失敗しないようにする）
             print(f"on_idx_changed error for idx={value}: {e}")
@@ -495,6 +635,11 @@ class AFMViewer:
             self._update_text(int(idx))
             # 保持
             self.current_display_idx = int(idx)
+            # マップ上に選択点をハイライト
+            try:
+                self.highlight_idx_on_map(int(idx))
+            except Exception as e:
+                print(f"on_display_option_changed: highlight failed for idx={idx}: {e}")
         except Exception as e:
             print(f"on_display_option_changed: failed to redraw idx={idx}: {e}")
             # GUIにエラーを表示しておく
