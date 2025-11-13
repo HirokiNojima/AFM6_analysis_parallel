@@ -294,7 +294,7 @@ class AFMViewer:
                         img_layer.colormap = napari_cmap
                     except Exception:
                         pass
-                    print(f"[debug] updated existing AFM Map layer in-place")
+                    
                 except Exception:
                     # fallback to removing and re-adding if in-place update fails
                     try:
@@ -331,11 +331,10 @@ class AFMViewer:
         # Debug: print current layer order and whether 'Selected Point' exists
         try:
             layer_names = [lay.name for lay in self.viewer.layers]
-            print(f"[debug] layers after add_image: {layer_names}")
             if 'Selected Point' in self.viewer.layers:
                 lp = self.viewer.layers['Selected Point']
                 try:
-                    print(f"[debug] Selected Point exists after image add: data={getattr(lp, 'data', None)}, size={getattr(lp, 'size', None)}, size_mode={getattr(lp, 'size_mode', None)}, face_color={getattr(lp, 'face_color', None)}, visible={getattr(lp, 'visible', None)}")
+                    pass
                 except Exception:
                     pass
         except Exception:
@@ -462,10 +461,7 @@ class AFMViewer:
                     new_layer = self.viewer.add_points(point, name='Selected Point', size=size_px, face_color='red')
                     try:
                         # debug: print computed and applied size / mode
-                        print(f"[debug] compute_point_size -> {size_px}")
-                        if hasattr(new_layer, 'size'):
-                            print(f"[debug] new_layer.size (after add) = {getattr(new_layer, 'size', None)}")
-                        # try to set screen/view mode and a target pixel size
+                        
                         try:
                             if hasattr(new_layer, 'size'):
                                 new_layer.size = int(target_pixels)
@@ -475,7 +471,6 @@ class AFMViewer:
                             if hasattr(new_layer, 'size_mode'):
                                 try:
                                     new_layer.size_mode = mode
-                                    print(f"[debug] new_layer.size_mode = {mode}")
                                     break
                                 except Exception:
                                     continue
@@ -483,7 +478,6 @@ class AFMViewer:
                         if world_size is not None:
                             try:
                                 new_layer.size = world_size
-                                print(f"[debug] new_layer.size (world fallback) = {world_size}")
                             except Exception:
                                 pass
 
@@ -512,9 +506,7 @@ class AFMViewer:
             else:
                 new_layer = self.viewer.add_points(point, name='Selected Point', size=size_px, face_color='red')
                 try:
-                    print(f"[debug] compute_point_size -> {size_px}")
-                    if hasattr(new_layer, 'size'):
-                        print(f"[debug] new_layer.size (after add) = {getattr(new_layer, 'size', None)}")
+                    # debug prints removed
                     try:
                         if hasattr(new_layer, 'size'):
                             new_layer.size = target_pixels
@@ -524,14 +516,12 @@ class AFMViewer:
                         if hasattr(new_layer, 'size_mode'):
                             try:
                                 new_layer.size_mode = mode
-                                print(f"[debug] new_layer.size_mode = {mode}")
                                 break
                             except Exception:
                                 continue
                     if world_size is not None:
                         try:
                             new_layer.size = world_size
-                            print(f"[debug] new_layer.size (world fallback) = {world_size}")
                         except Exception:
                             pass
                     # enforce visual defaults on newly created layer
@@ -609,7 +599,7 @@ class AFMViewer:
 
                         # apply size/mode settings without re-creating the layer
                         try:
-                            print(f"[debug] readd compute_point_size -> {size}")
+                            # debug prints removed
                             target_pixels = 5
                             world_size = None
                             try:
@@ -622,7 +612,6 @@ class AFMViewer:
                             if hasattr(layer2, 'size'):
                                 try:
                                     layer2.size = target_pixels
-                                    print(f"[debug] moved layer2.size (target pixels) = {getattr(layer2, 'size', None)}")
                                 except Exception:
                                     try:
                                         layer2.size = size
@@ -633,7 +622,6 @@ class AFMViewer:
                                 if hasattr(layer2, 'size_mode'):
                                     try:
                                         layer2.size_mode = mode
-                                        print(f"[debug] moved layer2.size_mode = {mode}")
                                         break
                                     except Exception:
                                         continue
@@ -663,7 +651,6 @@ class AFMViewer:
                             if world_size is not None:
                                 try:
                                     layer2.size = world_size
-                                    print(f"[debug] moved layer2.size (world fallback) = {world_size}")
                                 except Exception:
                                     pass
                         except Exception:
@@ -672,7 +659,6 @@ class AFMViewer:
                         # if the layer no longer exists, add it
                         try:
                             new_layer = self.viewer.add_points(data, name='Selected Point', size=size, face_color=face_color)
-                            print(f"[debug] re-added Selected Point layer (fallback)")
                         except Exception:
                             pass
                 except Exception:
@@ -798,10 +784,9 @@ class AFMViewer:
                     mode_now = self.plot_mode_combo.currentText()
                 except Exception:
                     mode_now = 'unknown'
-                print(f"[debug] on_mouse_click: selected plot mode = {mode_now}")
                 self.update_plot_mode(data_obj, idx)
             except Exception as e:
-                print(f"[debug] update_plot_mode failed: {e}")
+                # update_plot_mode failed; fallback to direct plot
                 self._update_plot(data_obj, idx)
 
             # (g) テキストを更新
@@ -1009,7 +994,6 @@ class AFMViewer:
 
     def _update_plot(self, data_obj, idx):
         """MatplotlibのAxesを更新する"""
-        print(f"[debug] _update_plot called idx={idx}")
         self.plot_ax.clear() # 既存のプロットを消去
         # X軸: 優先順位 z_distance -> raw_ztip
         x_arr = None
@@ -1048,7 +1032,7 @@ class AFMViewer:
                 ly = len(y_plot)
             except Exception:
                 ly = getattr(y_plot, 'size', 0)
-            print(f"[debug] _update_plot: x_len={lx}, y_len={ly}")
+            
             if lx == 0 or ly == 0:
                 self.plot_ax.text(0.5, 0.5, 'No force curve data', ha='center', va='center')
             else:
@@ -1103,8 +1087,7 @@ class AFMViewer:
             mode = self.plot_mode_combo.currentText()
         except Exception:
             mode = 'Force Curve'
-        print(f"[debug] update_plot_mode called: mode={mode}, idx={idx}")
-
+        
         if mode == 'Force Curve':
             try:
                 self._update_plot(data_obj, idx)
