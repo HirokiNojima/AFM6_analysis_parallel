@@ -258,7 +258,10 @@ class AFMViewer:
 
         # (e) Napariの座標系に合わせてスケーリング
         xmin, xmax, ymin, ymax = self.data["map_extent"]
-        scale = ((ymax - ymin) / grid_size[0], (xmax - xmin) / grid_size[1])
+        # guard against zero extent (which causes singular transform errors)
+        dx = max(1e-9, (xmax - xmin))
+        dy = max(1e-9, (ymax - ymin))
+        scale = (dy / grid_size[0], dx / grid_size[1])
         translate = (ymin, xmin)
 
         # (f) Napariビューアに画像レイヤーとして追加
@@ -311,20 +314,110 @@ class AFMViewer:
             point = [[y_um, x_um]]
             point_scale = None
 
+            # compute a size that's appropriate for the current map (in screen px)
+            size_px = self.compute_point_size()
+            # target on-screen pixel size for cursor-like marker (approx mouse cursor)
+            target_pixels = 5
+            # estimate world-size equivalent using current map scale (if available)
+            world_size = None
+            try:
+                if getattr(self, 'last_map_scale', None) is not None:
+                    avg_world_per_pixel = float(np.mean(self.last_map_scale))
+                    world_size = float(target_pixels) * avg_world_per_pixel
+            except Exception:
+                world_size = None
+
             # If a layer named 'Selected Point' exists, update it; otherwise add new points layer
             if 'Selected Point' in self.viewer.layers:
                 layer = self.viewer.layers['Selected Point']
                 try:
                     layer.data = point
+                    # ensure the layer uses a screen/view-based size mode if available
+                    try:
+                        # try to apply a screen-based size first
+                        if hasattr(layer, 'size'):
+                            try:
+                                layer.size = target_pixels
+                            except Exception:
+                                layer.size = size_px
+                        # try several possible size_mode values to request screen/view sizing
+                        for mode in ('view', 'screen', 'fixed', 'constant', 'data'):
+                            if hasattr(layer, 'size_mode'):
+                                try:
+                                    layer.size_mode = mode
+                                    break
+                                except Exception:
+                                    continue
+                        # if size_mode didn't take effect, fall back to world-sized marker
+                        if world_size is not None:
+                            try:
+                                layer.size = world_size
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
                 except Exception:
                     # Fall back to removing and re-adding layer
                     try:
                         self.viewer.layers.remove(layer)
                     except Exception:
                         pass
-                    self.viewer.add_points(point, name='Selected Point', size=3, face_color='red')
+                    new_layer = self.viewer.add_points(point, name='Selected Point', size=size_px, face_color='red')
+                    try:
+                        # debug: print computed and applied size / mode
+                        print(f"[debug] compute_point_size -> {size_px}")
+                        if hasattr(new_layer, 'size'):
+                            print(f"[debug] new_layer.size (after add) = {getattr(new_layer, 'size', None)}")
+                        # try to set screen/view mode and a target pixel size
+                        try:
+                            if hasattr(new_layer, 'size'):
+                                new_layer.size = target_pixels
+                        except Exception:
+                            pass
+                        for mode in ('view', 'screen', 'fixed', 'constant', 'data'):
+                            if hasattr(new_layer, 'size_mode'):
+                                try:
+                                    new_layer.size_mode = mode
+                                    print(f"[debug] new_layer.size_mode = {mode}")
+                                    break
+                                except Exception:
+                                    continue
+                        # fallback: set world-size if we computed one
+                        if world_size is not None:
+                            try:
+                                new_layer.size = world_size
+                                print(f"[debug] new_layer.size (world fallback) = {world_size}")
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
             else:
-                self.viewer.add_points(point, name='Selected Point', size=3, face_color='red')
+                new_layer = self.viewer.add_points(point, name='Selected Point', size=size_px, face_color='red')
+                try:
+                    print(f"[debug] compute_point_size -> {size_px}")
+                    if hasattr(new_layer, 'size'):
+                        print(f"[debug] new_layer.size (after add) = {getattr(new_layer, 'size', None)}")
+                    try:
+                        if hasattr(new_layer, 'size'):
+                            new_layer.size = target_pixels
+                    except Exception:
+                        pass
+                    for mode in ('view', 'screen', 'fixed', 'constant', 'data'):
+                        if hasattr(new_layer, 'size_mode'):
+                            try:
+                                new_layer.size_mode = mode
+                                print(f"[debug] new_layer.size_mode = {mode}")
+                                break
+                            except Exception:
+                                continue
+                    if world_size is not None:
+                        try:
+                            new_layer.size = world_size
+                            print(f"[debug] new_layer.size (world fallback) = {world_size}")
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
             # ensure the Selected Point layer is on top (deferred)
             try:
                 QTimer.singleShot(0, self.ensure_selected_point_on_top)
@@ -349,10 +442,9 @@ class AFMViewer:
                 data = layer.data.copy()
             except Exception:
                 data = layer.data
-            # reduce marker size to roughly 1/3 for visibility
+            # compute a marker size based on the current map/grid and point density
             try:
-                orig_size = getattr(layer, 'size', 12)
-                size = max(1, int(orig_size / 3))
+                size = self.compute_point_size()
             except Exception:
                 size = 3
             face_color = None
@@ -361,22 +453,116 @@ class AFMViewer:
             except Exception:
                 face_color = 'red'
 
-            # remove and re-add (defer actual removal to next loop to be safe)
+            # move layer to last position (top) and set display properties
             def readd():
                 try:
                     if 'Selected Point' in self.viewer.layers:
+                        layer2 = self.viewer.layers['Selected Point']
+                        # move to last index
                         try:
-                            self.viewer.layers.remove(self.viewer.layers['Selected Point'])
+                            layers_list2 = list(self.viewer.layers)
+                            if layer2 in layers_list2:
+                                cur2 = layers_list2.index(layer2)
+                                dest2 = len(layers_list2) - 1
+                                if cur2 != dest2:
+                                    self.viewer.layers.move(cur2, dest2)
                         except Exception:
                             pass
-                    # re-add as last layer
-                    self.viewer.add_points(data, name='Selected Point', size=size, face_color=face_color)
+
+                        # apply size/mode settings without re-creating the layer
+                        try:
+                            print(f"[debug] readd compute_point_size -> {size}")
+                            target_pixels = 5
+                            world_size = None
+                            try:
+                                if getattr(self, 'last_map_scale', None) is not None:
+                                    avg_world_per_pixel = float(np.mean(self.last_map_scale))
+                                    world_size = float(target_pixels) * avg_world_per_pixel
+                            except Exception:
+                                world_size = None
+
+                            if hasattr(layer2, 'size'):
+                                try:
+                                    layer2.size = target_pixels
+                                    print(f"[debug] moved layer2.size (target pixels) = {getattr(layer2, 'size', None)}")
+                                except Exception:
+                                    try:
+                                        layer2.size = size
+                                    except Exception:
+                                        pass
+
+                            for mode in ('view', 'screen', 'fixed', 'constant', 'data'):
+                                if hasattr(layer2, 'size_mode'):
+                                    try:
+                                        layer2.size_mode = mode
+                                        print(f"[debug] moved layer2.size_mode = {mode}")
+                                        break
+                                    except Exception:
+                                        continue
+
+                            if world_size is not None:
+                                try:
+                                    layer2.size = world_size
+                                    print(f"[debug] moved layer2.size (world fallback) = {world_size}")
+                                except Exception:
+                                    pass
+                        except Exception:
+                            pass
+                    else:
+                        # if the layer no longer exists, add it
+                        try:
+                            new_layer = self.viewer.add_points(data, name='Selected Point', size=size, face_color=face_color)
+                            print(f"[debug] re-added Selected Point layer (fallback)")
+                        except Exception:
+                            pass
                 except Exception:
                     pass
 
             QTimer.singleShot(0, readd)
         except Exception:
             pass
+
+    def compute_point_size(self, min_px: int = 1, max_px: int = 40, fraction: float = 0.02):
+        """Compute a sensible point marker size in pixels based on the
+        currently displayed map. The heuristic is:
+
+        - Use the last_map_grid_size (pixels) as a baseline: marker ~ fraction * avg(grid)
+        - If point density is high (many coords), scale down the marker.
+        - Clamp result to [min_px, max_px].
+
+        This yields a stable onscreen size that adapts to map resolution
+        and data density.
+        """
+        try:
+            # baseline from grid size (average of height/width)
+            if getattr(self, 'last_map_grid_size', None) is None:
+                base = 256.0
+            else:
+                base = float(np.mean(self.last_map_grid_size))
+
+            size = float(base) * float(fraction)
+
+            # reduce size when there are many points
+            n_points = 0
+            coords = self.data.get('xy_coords_um')
+            if coords is not None:
+                try:
+                    n_points = len(coords)
+                except Exception:
+                    n_points = 0
+
+            if n_points > 0:
+                # scale factor: for very many points make markers smaller
+                density_scale = max(0.3, min(1.0, (1000.0 / float(n_points)) ** 0.5))
+                size *= density_scale
+
+            # shrink diameter to approximately 1/5 (~20%) as requested
+            size *= 0.2
+
+            size_px = int(max(min_px, min(max_px, round(size))))
+            return size_px
+        except Exception:
+            return min_px
 
     def _bring_layer_to_front(self, layer_name: str):
         """指定したレイヤーをレイヤーリストの最前面（上）に移動する。"""
