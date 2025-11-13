@@ -133,6 +133,14 @@ class AFMViewer:
         control_layout.addWidget(self.chk_cp)
         self.chk_cp.stateChanged.connect(self.on_display_option_changed)
         
+        # Plot mode selector: Force Curve / Map Histogram / Map Profile
+        control_layout.addWidget(QLabel("プロットモード:"))
+        self.plot_mode_combo = QComboBox()
+        self.plot_mode_combo.addItems(["Force Curve", "Map Histogram", "Map Profile"])
+        self.plot_mode_combo.setCurrentIndex(0)
+        self.plot_mode_combo.currentTextChanged.connect(self.on_plot_mode_changed)
+        control_layout.addWidget(self.plot_mode_combo)
+
         self.control_widget.setLayout(control_layout)
         self.viewer.window.add_dock_widget(self.control_widget, area='right', name='コントロール')
 
@@ -265,32 +273,94 @@ class AFMViewer:
         translate = (ymin, xmin)
 
         # (f) Napariビューアに画像レイヤーとして追加
+        # If an AFM Map layer already exists, update it in-place to avoid
+        # removing other layers (such as 'Selected Point') which can cause
+        # flicker or lost layers across backends.
         try:
-            # 既に "AFM Map" レイヤーがあれば削除
-            self.viewer.layers.pop("AFM Map")
-        except KeyError:
-            pass # 初回ロード
-            
-        self.viewer.add_image(
-            plot_data,
-            name="AFM Map",
-            colormap=napari_cmap,
-            scale=scale,
-            translate=translate
-        )
+            if 'AFM Map' in self.viewer.layers:
+                img_layer = self.viewer.layers['AFM Map']
+                try:
+                    img_layer.data = plot_data
+                    # update visual properties
+                    try:
+                        img_layer.scale = scale
+                    except Exception:
+                        pass
+                    try:
+                        img_layer.translate = translate
+                    except Exception:
+                        pass
+                    try:
+                        img_layer.colormap = napari_cmap
+                    except Exception:
+                        pass
+                    print(f"[debug] updated existing AFM Map layer in-place")
+                except Exception:
+                    # fallback to removing and re-adding if in-place update fails
+                    try:
+                        self.viewer.layers.remove(img_layer)
+                    except Exception:
+                        pass
+                    self.viewer.add_image(
+                        plot_data,
+                        name="AFM Map",
+                        colormap=napari_cmap,
+                        scale=scale,
+                        translate=translate
+                    )
+            else:
+                self.viewer.add_image(
+                    plot_data,
+                    name="AFM Map",
+                    colormap=napari_cmap,
+                    scale=scale,
+                    translate=translate
+                )
+        except Exception:
+            # As a last resort, try a simple add_image
+            try:
+                self.viewer.add_image(
+                    plot_data,
+                    name="AFM Map",
+                    colormap=napari_cmap,
+                    scale=scale,
+                    translate=translate
+                )
+            except Exception:
+                pass
+        # Debug: print current layer order and whether 'Selected Point' exists
+        try:
+            layer_names = [lay.name for lay in self.viewer.layers]
+            print(f"[debug] layers after add_image: {layer_names}")
+            if 'Selected Point' in self.viewer.layers:
+                lp = self.viewer.layers['Selected Point']
+                try:
+                    print(f"[debug] Selected Point exists after image add: data={getattr(lp, 'data', None)}, size={getattr(lp, 'size', None)}, size_mode={getattr(lp, 'size_mode', None)}, face_color={getattr(lp, 'face_color', None)}, visible={getattr(lp, 'visible', None)}")
+                except Exception:
+                    pass
+        except Exception:
+            pass
         # 保存しておく: マップのグリッドサイズ/スケール/translate を later highlight に使う
         try:
             self.last_map_grid_size = grid_size
             self.last_map_scale = scale
             self.last_map_translate = translate
+            # keep the plotted image data accessible for histogram/profile
+            self.last_map_plot_data = plot_data
         except Exception:
             self.last_map_grid_size = None
             self.last_map_scale = None
             self.last_map_translate = None
+            self.last_map_plot_data = None
         # マップを切り替えた場合は、もし現在表示中の idx があればそれをハイライト
         try:
             if getattr(self, 'current_display_idx', None) is not None:
                 self.highlight_idx_on_map(self.current_display_idx)
+                # ensure Selected Point remains on top after image replace
+                try:
+                    QTimer.singleShot(0, self.ensure_selected_point_on_top)
+                except Exception:
+                    pass
         except Exception:
             pass
 
@@ -332,22 +402,48 @@ class AFMViewer:
                 layer = self.viewer.layers['Selected Point']
                 try:
                     layer.data = point
-                    # ensure the layer uses a screen/view-based size mode if available
+
+                    # Force a consistent visual appearance so the point is visible
                     try:
-                        # try to apply a screen-based size first
+                        # Prefer a scalar int size in pixels first
                         if hasattr(layer, 'size'):
                             try:
-                                layer.size = target_pixels
+                                layer.size = int(target_pixels)
                             except Exception:
-                                layer.size = size_px
-                        # try several possible size_mode values to request screen/view sizing
-                        for mode in ('view', 'screen', 'fixed', 'constant', 'data'):
+                                layer.size = int(size_px)
+
+                        # Try common size_mode names
+                        for mode in ('view', 'screen', 'pixels', 'fixed', 'constant', 'data'):
                             if hasattr(layer, 'size_mode'):
                                 try:
                                     layer.size_mode = mode
                                     break
                                 except Exception:
                                     continue
+
+                        # Explicit visual defaults
+                        try:
+                            if hasattr(layer, 'face_color'):
+                                layer.face_color = 'red'
+                            if hasattr(layer, 'edge_color'):
+                                layer.edge_color = 'dimgrey'
+                            if hasattr(layer, 'edge_width'):
+                                layer.edge_width = 0.5
+                            if hasattr(layer, 'symbol'):
+                                try:
+                                    layer.symbol = 'disc'
+                                except Exception:
+                                    try:
+                                        layer.symbol = 'o'
+                                    except Exception:
+                                        pass
+                            if hasattr(layer, 'visible'):
+                                layer.visible = True
+                            if hasattr(layer, 'opacity'):
+                                layer.opacity = 1.0
+                        except Exception:
+                            pass
+
                         # if size_mode didn't take effect, fall back to world-sized marker
                         if world_size is not None:
                             try:
@@ -362,6 +458,7 @@ class AFMViewer:
                         self.viewer.layers.remove(layer)
                     except Exception:
                         pass
+
                     new_layer = self.viewer.add_points(point, name='Selected Point', size=size_px, face_color='red')
                     try:
                         # debug: print computed and applied size / mode
@@ -371,10 +468,10 @@ class AFMViewer:
                         # try to set screen/view mode and a target pixel size
                         try:
                             if hasattr(new_layer, 'size'):
-                                new_layer.size = target_pixels
+                                new_layer.size = int(target_pixels)
                         except Exception:
                             pass
-                        for mode in ('view', 'screen', 'fixed', 'constant', 'data'):
+                        for mode in ('view', 'screen', 'pixels', 'fixed', 'constant', 'data'):
                             if hasattr(new_layer, 'size_mode'):
                                 try:
                                     new_layer.size_mode = mode
@@ -389,6 +486,27 @@ class AFMViewer:
                                 print(f"[debug] new_layer.size (world fallback) = {world_size}")
                             except Exception:
                                 pass
+
+                        # also enforce visual properties on the newly created layer
+                        try:
+                            if hasattr(new_layer, 'edge_color'):
+                                new_layer.edge_color = 'dimgrey'
+                            if hasattr(new_layer, 'edge_width'):
+                                new_layer.edge_width = 0.5
+                            if hasattr(new_layer, 'symbol'):
+                                try:
+                                    new_layer.symbol = 'disc'
+                                except Exception:
+                                    try:
+                                        new_layer.symbol = 'o'
+                                    except Exception:
+                                        pass
+                            if hasattr(new_layer, 'visible'):
+                                new_layer.visible = True
+                            if hasattr(new_layer, 'opacity'):
+                                new_layer.opacity = 1.0
+                        except Exception:
+                            pass
                     except Exception:
                         pass
             else:
@@ -416,6 +534,26 @@ class AFMViewer:
                             print(f"[debug] new_layer.size (world fallback) = {world_size}")
                         except Exception:
                             pass
+                    # enforce visual defaults on newly created layer
+                    try:
+                        if hasattr(new_layer, 'edge_color'):
+                            new_layer.edge_color = 'dimgrey'
+                        if hasattr(new_layer, 'edge_width'):
+                            new_layer.edge_width = 0.5
+                        if hasattr(new_layer, 'symbol'):
+                            try:
+                                new_layer.symbol = 'disc'
+                            except Exception:
+                                try:
+                                    new_layer.symbol = 'o'
+                                except Exception:
+                                    pass
+                        if hasattr(new_layer, 'visible'):
+                            new_layer.visible = True
+                        if hasattr(new_layer, 'opacity'):
+                            new_layer.opacity = 1.0
+                    except Exception:
+                        pass
                 except Exception:
                     pass
             # ensure the Selected Point layer is on top (deferred)
@@ -499,6 +637,28 @@ class AFMViewer:
                                         break
                                     except Exception:
                                         continue
+                            # enforce visual defaults on the existing layer as well
+                            try:
+                                if hasattr(layer2, 'face_color'):
+                                    layer2.face_color = 'red'
+                                if hasattr(layer2, 'edge_color'):
+                                    layer2.edge_color = 'dimgrey'
+                                if hasattr(layer2, 'edge_width'):
+                                    layer2.edge_width = 0.5
+                                if hasattr(layer2, 'symbol'):
+                                    try:
+                                        layer2.symbol = 'disc'
+                                    except Exception:
+                                        try:
+                                            layer2.symbol = 'o'
+                                        except Exception:
+                                            pass
+                                if hasattr(layer2, 'visible'):
+                                    layer2.visible = True
+                                if hasattr(layer2, 'opacity'):
+                                    layer2.opacity = 1.0
+                            except Exception:
+                                pass
 
                             if world_size is not None:
                                 try:
@@ -632,7 +792,17 @@ class AFMViewer:
                 except Exception:
                     pass
 
-            self._update_plot(data_obj, idx)
+            # update plot according to selected mode (force curve / histogram / profile)
+            try:
+                try:
+                    mode_now = self.plot_mode_combo.currentText()
+                except Exception:
+                    mode_now = 'unknown'
+                print(f"[debug] on_mouse_click: selected plot mode = {mode_now}")
+                self.update_plot_mode(data_obj, idx)
+            except Exception as e:
+                print(f"[debug] update_plot_mode failed: {e}")
+                self._update_plot(data_obj, idx)
 
             # (g) テキストを更新
             self._update_text(idx)
@@ -817,7 +987,10 @@ class AFMViewer:
 
         try:
             data_obj, _ = self.get_curve_data_by_index(int(idx))
-            self._update_plot(data_obj, int(idx))
+            try:
+                self.update_plot_mode(data_obj, int(idx))
+            except Exception:
+                self._update_plot(data_obj, int(idx))
             self._update_text(int(idx))
             # 保持
             self.current_display_idx = int(idx)
@@ -836,6 +1009,7 @@ class AFMViewer:
 
     def _update_plot(self, data_obj, idx):
         """MatplotlibのAxesを更新する"""
+        print(f"[debug] _update_plot called idx={idx}")
         self.plot_ax.clear() # 既存のプロットを消去
         # X軸: 優先順位 z_distance -> raw_ztip
         x_arr = None
@@ -865,7 +1039,20 @@ class AFMViewer:
         try:
             x_plot = x_arr * x_scale
             y_plot = y_arr * y_scale
-            self.plot_ax.plot(x_plot, y_plot, label="Force Curve")
+            # debug: sizes / sample values
+            try:
+                lx = len(x_plot)
+            except Exception:
+                lx = getattr(x_plot, 'size', 0)
+            try:
+                ly = len(y_plot)
+            except Exception:
+                ly = getattr(y_plot, 'size', 0)
+            print(f"[debug] _update_plot: x_len={lx}, y_len={ly}")
+            if lx == 0 or ly == 0:
+                self.plot_ax.text(0.5, 0.5, 'No force curve data', ha='center', va='center')
+            else:
+                self.plot_ax.plot(x_plot, y_plot, label="Force Curve")
         except Exception as e:
             # プロットできない場合はログ出力して終了
             print(f"_update_plot: failed to plot data for idx={idx}: {e}")
@@ -893,6 +1080,124 @@ class AFMViewer:
 
         # Matplotlibのキャンバスを再描画
         self.plot_fig.canvas.draw_idle()
+
+    def on_plot_mode_changed(self, text: str):
+        """Handle plot mode changes from the combo box."""
+        # If there is a current index, refresh the plot according to the new mode
+        try:
+            if getattr(self, 'current_display_idx', None) is not None:
+                idx = int(self.current_display_idx)
+                data_obj, _ = self.get_curve_data_by_index(idx)
+                self.update_plot_mode(data_obj, idx)
+        except Exception:
+            # If no curve is loaded or an error, still allow histogram mode
+            if text == 'Map Histogram':
+                try:
+                    self.plot_map_histogram()
+                except Exception:
+                    pass
+
+    def update_plot_mode(self, data_obj, idx):
+        """Update the matplotlib plot area according to selected plot mode."""
+        try:
+            mode = self.plot_mode_combo.currentText()
+        except Exception:
+            mode = 'Force Curve'
+        print(f"[debug] update_plot_mode called: mode={mode}, idx={idx}")
+
+        if mode == 'Force Curve':
+            try:
+                self._update_plot(data_obj, idx)
+            except Exception as e:
+                print(f"update_plot_mode: failed to draw Force Curve: {e}")
+        elif mode == 'Map Histogram':
+            try:
+                self.plot_map_histogram()
+            except Exception as e:
+                print(f"update_plot_mode: failed to draw Map Histogram: {e}")
+        elif mode == 'Map Profile':
+            try:
+                self.plot_map_profile(idx)
+            except Exception as e:
+                print(f"update_plot_mode: failed to draw Map Profile: {e}")
+
+    def plot_map_histogram(self, bins: int = 256):
+        """Plot histogram of currently displayed map image."""
+        self.plot_ax.clear()
+        data = getattr(self, 'last_map_plot_data', None)
+        if data is None:
+            self.plot_ax.text(0.5, 0.5, 'No map loaded', ha='center', va='center')
+            self.plot_fig.canvas.draw_idle()
+            return
+
+        flat = np.ravel(data)
+        try:
+            self.plot_ax.hist(flat, bins=bins, color='gray')
+            self.plot_ax.set_title('Map Histogram')
+            self.plot_ax.set_xlabel('Value')
+            self.plot_ax.set_ylabel('Count')
+            self.plot_ax.grid(True)
+            self.plot_fig.canvas.draw_idle()
+        except Exception as e:
+            print(f"plot_map_histogram: failed: {e}")
+
+    def plot_map_profile(self, idx=None):
+        """Plot cross-section profiles (row and column) through selected point.
+
+        If idx is None, try to use current_display_idx.
+        """
+        self.plot_ax.clear()
+        data = getattr(self, 'last_map_plot_data', None)
+        if data is None:
+            self.plot_ax.text(0.5, 0.5, 'No map loaded', ha='center', va='center')
+            self.plot_fig.canvas.draw_idle()
+            return
+
+        if idx is None:
+            try:
+                idx = int(self.current_display_idx)
+            except Exception:
+                idx = None
+
+        # map world -> image indices
+        i = None
+        j = None
+        try:
+            if idx is not None:
+                coords = self.data.get('xy_coords_um')
+                x_um = float(coords[idx, 0])
+                y_um = float(coords[idx, 1])
+                # translate and scale
+                t = getattr(self, 'last_map_translate', None)
+                s = getattr(self, 'last_map_scale', None)
+                if t is not None and s is not None:
+                    # translate = (ymin, xmin), scale = (dy_per_pixel, dx_per_pixel)
+                    i = int(round((y_um - t[0]) / s[0]))
+                    j = int(round((x_um - t[1]) / s[1]))
+        except Exception:
+            i = None
+            j = None
+
+        ny, nx = data.shape
+        # clamp
+        if i is None or i < 0 or i >= ny:
+            i = ny // 2
+        if j is None or j < 0 or j >= nx:
+            j = nx // 2
+
+        try:
+            row = data[i, :]
+            col = data[:, j]
+            self.plot_ax.plot(np.arange(len(row)), row, label=f'Row {i}', color='C0')
+            self.plot_ax.plot(np.arange(len(col)), col, label=f'Col {j}', color='C1')
+            self.plot_ax.set_title(f'Map Profile (row {i}, col {j})')
+            self.plot_ax.set_xlabel('Pixel index')
+            self.plot_ax.set_ylabel('Value')
+            self.plot_ax.legend()
+            self.plot_ax.grid(True)
+            self.plot_fig.canvas.draw_idle()
+        except Exception as e:
+            print(f"plot_map_profile: failed: {e}")
 
     def _update_text(self, idx):
         """PyQtのQLabelのテキストを更新する"""
