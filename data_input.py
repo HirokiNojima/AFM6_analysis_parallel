@@ -133,7 +133,19 @@ class DataReader:
         ysensor = values.get("Y", 0.0)
         return [xsensor, ysensor]
     
-    # 🌟 新規追加: 単一のインデックスのフォースカーブを読み込むメソッド
+    @staticmethod
+    def _read_tipoffsets(folder_path: str) -> np.ndarray:
+        """Tipoffsets.txt からチップオフセット値を読み込むプライベートメソッド。"""
+        file_path = os.path.join(folder_path, "ZTipoffsets.txt")
+        if not os.path.isfile(file_path):
+            raise FileNotFoundError(f'指定されたファイルが見つかりません: {file_path}')
+        try:
+            tip_offsets = np.loadtxt(file_path) * 0.65e-6  # m単位に変換(カタログ値を用いて変更している)
+        except Exception as e:
+            raise RuntimeError(f'{file_path} の読み込みに失敗しました: {e}')
+        return tip_offsets
+    
+    # 単一のインデックスのフォースカーブを読み込むメソッド
     def read_single_force_curve(self, folder_path: str, index: int, metadata: Dict[str, Any]) -> AFMData:
         """
         TDMSファイルから指定されたインデックスのフォースカーブデータのみを読み込み、AFMDataオブジェクトを生成する。
@@ -143,6 +155,8 @@ class DataReader:
         
         # 3. ヒステリシス補正カーブの読み込み
         hyst_curve = self.read_hysteresis_curve(metadata, script_file_path=__file__)
+        
+        tip_offset = self._read_tipoffsets(folder_path)[index]
 
         try:
             with TdmsFile.open(file_path) as tdms_file:
@@ -170,7 +184,8 @@ class DataReader:
                     folder_path=folder_path,
                     hyst_curve=hyst_curve,
                     xsensor=xsensor,
-                    ysensor=ysensor
+                    ysensor=ysensor,
+                    tip_offset=tip_offset
                 )
                 return data_obj
                 

@@ -16,7 +16,8 @@ class AFMData:
             folder_path: str,
             hyst_curve: np.ndarray,
             xsensor: float = 0.0,
-            ysensor: float = 0.0
+            ysensor: float = 0.0,
+            tip_offset: float = 0.0
             ):
         # --- 生データを保持する属性 ---
         self.raw_deflection = raw_deflection
@@ -27,6 +28,7 @@ class AFMData:
         self.hyst_curve = hyst_curve  # ヒステリス曲線データ。参照として保持する。
         self.xsensor = xsensor  # センサのX位置
         self.ysensor = ysensor  # センサのY位置
+        self.tip_offset = tip_offset  # チップオフセット値
 
         # ★★★ 以下の2行を追加 ★★★
         # 必要なメタデータをスカラ値としてコピー
@@ -61,4 +63,5 @@ class AFMData:
         self.force_corrected = None
         self.hyst_curve = None # 参照データも不要なら破棄
         self.metadata = None
+        self.tip_offset = None
     

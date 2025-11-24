@@ -54,7 +54,7 @@ class AFM_Curve_analyzer:
         フォースカーブからトポグラフィー高さを計算する。
         """
         cp_idx = data_obj.contact_point_index
-        data_obj.topography = data_obj.z_distance[cp_idx] + data_obj.raw_zsensor[cp_idx] * data_obj.metadata['DISTANCE_PER_VOLT']  # トポグラフィー高さ [m]
+        data_obj.topography = data_obj.z_distance[cp_idx] + data_obj.raw_zsensor[cp_idx] * data_obj.metadata['DISTANCE_PER_VOLT'] + data_obj.tip_offset  # トポグラフィー高さ [m]
 
     def _calc_young_and_delta(self, data_obj: AFMData):
         """
