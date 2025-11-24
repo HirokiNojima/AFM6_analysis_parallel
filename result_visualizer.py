@@ -32,7 +32,7 @@ class AFM_Result_Visualizer:
                 'log_transform': True
             },
             'topography': {
-                'cmap': 'afmhot_r',
+                'cmap': 'afmhot',
                 'label': "Height (µm)",
                 'title': "Topography",
                 'fname': "corrected_Topography.png",
@@ -252,10 +252,12 @@ class AFM_Result_Visualizer:
 
         Z_grid = interpolator.fit_transform(X_coords_um, Y_coords_um, Z_values)
 
-        # topographyの場合、一次元平面でフィッティングして全体の傾斜を補正する。
+        # topographyの場合、一次元平面でフィッティングして全体の傾斜を補正する。また、高さも反転させ、実際のトポグラフィーに合わせる。
         if property_key == 'topography':
             print('トップグラフィー傾斜補正中...')
             Z_grid = self._line_flatten_1st_order(Z_grid)
+            Z_grid = np.max(Z_grid) - Z_grid  # 高さを反転
+            Z_grid -= np.min(Z_grid)  # 最小値を0にシフト
             print('傾斜補正完了。')
             
         # 4. 2Dマップ配列 (.npz) の保存
