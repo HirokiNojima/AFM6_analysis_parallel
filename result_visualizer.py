@@ -87,23 +87,12 @@ class AFM_Result_Visualizer:
         if not data_list:
             raise ValueError("データリストが空です。")
             
-        # ★★★ ここから修正 ★★★
-        
-        # 修正前:
-        # metadata = data_list[0].metadata
-        # nx = metadata.get('XStep', 1)
-        # ny = metadata.get('YStep', 1)
-        
-        # 修正後:
         # 破棄された metadata 参照ではなく、
         # オブジェクトにコピーされた XStep 属性を見る
         first_obj = data_list[0]
         nx = getattr(first_obj, 'XStep', 1) # 'XStep' 属性がなければ 1
         ny = getattr(first_obj, 'YStep', 1) # 'YStep' 属性がなければ 1
 
-        # ★★★ 修正ここまで ★★★
-        
-        # (↓ 以下のフォールバック処理は変更なし)
         if nx * ny != len(data_list):
             if np.sqrt(len(data_list)).is_integer():
                 nx = ny = int(np.sqrt(len(data_list)))
@@ -158,6 +147,42 @@ class AFM_Result_Visualizer:
             ratio = max_range / min_range
 
         return ratio > threshold
+    
+    def _line_flatten_1st_order(self, data_2d):
+        """
+        2次元配列に対して、行ごとに1次補正（傾きと切片の除去）を行う関数
+        
+        Parameters:
+            data_2d (np.ndarray): 補正前の2次元高さデータ (Height Map)
+        
+        Returns:
+            np.ndarray: 補正後のデータ
+        """
+        # 入力データのコピーを作成（元データを破壊しないため）
+        corrected_data = data_2d.copy()
+        
+        # 画像のサイズを取得 (高さ: rows, 幅: cols)
+        rows, cols = corrected_data.shape
+        
+        # X軸の座標配列を作成 (0, 1, 2, ... cols-1)
+        x = np.arange(cols)
+        
+        # --- 行ごとのループ処理 ---
+        for i in range(rows):
+            # 1行分のデータを取得
+            y_data = corrected_data[i, :]
+            
+            # 1次多項式 (y = ax + b) の係数を計算 (最小二乗法)
+            # polyfit(x, y, 1) は [傾きa, 切片b] を返します
+            slope, intercept = np.polyfit(x, y_data, 1)
+            
+            # フィッティングした直線を作成
+            fitted_line = slope * x + intercept
+            
+            # 元データからフィッティング直線を引く
+            corrected_data[i, :] = y_data - fitted_line
+            
+        return corrected_data
     
     # --- 保存メソッド ---
 
@@ -226,6 +251,12 @@ class AFM_Result_Visualizer:
         interpolator = FastRBFInterpolator2D(grid_size=grid_size, **kwargs)
 
         Z_grid = interpolator.fit_transform(X_coords_um, Y_coords_um, Z_values)
+
+        # topographyの場合、一次元平面でフィッティングして全体の傾斜を補正する。
+        if property_key == 'topography':
+            print('トップグラフィー傾斜補正中...')
+            Z_grid = self._line_flatten_1st_order(Z_grid)
+            print('傾斜補正完了。')
             
         # 4. 2Dマップ配列 (.npz) の保存
         map_npz_path = os.path.join(output_dir, f'{base_filename}_{property_key}_map.npz')
@@ -249,15 +280,19 @@ class AFM_Result_Visualizer:
         plt.figure(figsize=(8, 8))
         
         # extent=[X_min, X_max, Y_min, Y_max]
-        value_range = np.percentile(plot_data, 90) - np.percentile(plot_data, 10)
+        median = np.median(plot_data)
+        q75, q25 = np.percentile(plot_data, [75, 25])
+        iqr = q75 - q25
+        vmin = median - 1.5 * iqr
+        vmax = median + 1.5 * iqr
         im = plt.imshow(
             plot_data, 
             cmap=config['cmap'], 
             origin='upper', 
             # 1ラインスキャン時はY軸がパス番号の範囲 (0 to N_passes)
             extent=[X_coords_um.min(), X_coords_um.max(), Y_coords_um.min(), Y_coords_um.max()],
-            vmin = np.median(plot_data) - value_range,
-            vmax = np.median(plot_data) + value_range
+            vmin = vmin,
+            vmax = vmax
         )
         cbar = plt.colorbar(im)
         cbar.set_label(config['label'])
