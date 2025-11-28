@@ -149,9 +149,9 @@ class AFM_Result_Visualizer:
 
         return ratio > threshold
     
-    def _line_flatten_1st_order(self, data_2d):
+    def _flatten_plane(self, data_2d):
         """
-        2次元配列に対して、行ごとに1次補正（傾きと切片の除去）を行う関数
+        2次元配列に対して、面でのフィッティングを行い、全体の傾斜を補正する。
         
         Parameters:
             data_2d (np.ndarray): 補正前の2次元高さデータ (Height Map)
@@ -167,21 +167,29 @@ class AFM_Result_Visualizer:
         
         # X軸の座標配列を作成 (0, 1, 2, ... cols-1)
         x = np.arange(cols)
-        
-        # --- 行ごとのループ処理 ---
-        for i in range(rows):
-            # 1行分のデータを取得
-            y_data = corrected_data[i, :]
-            
-            # 1次多項式 (y = ax + b) の係数を計算 (最小二乗法)
-            # polyfit(x, y, 1) は [傾きa, 切片b] を返します
-            slope, intercept = np.polyfit(x, y_data, 1)
-            
-            # フィッティングした直線を作成
-            fitted_line = slope * x + intercept
-            
-            # 元データからフィッティング直線を引く
-            corrected_data[i, :] = y_data - fitted_line
+
+
+        # Fit and subtract a first-order plane z = a*x + b*y + c from the entire 2D map
+        # X: columns (0..cols-1), Y: rows (0..rows-1)
+        y = np.arange(rows)
+        X_mesh, Y_mesh = np.meshgrid(x, y)  # shape (rows, cols)
+
+        Z = corrected_data.astype(np.float64)
+        Z_flat = Z.ravel()
+        X_flat = X_mesh.ravel()
+        Y_flat = Y_mesh.ravel()
+
+        mask = np.isfinite(Z_flat)
+        if mask.sum() < 3:
+            # Not enough valid points to fit a plane; return original copy
+            return corrected_data
+
+        A = np.column_stack((X_flat[mask], Y_flat[mask], np.ones(mask.sum())))
+        coeffs, *_ = np.linalg.lstsq(A, Z_flat[mask], rcond=None)
+        a, b, c = coeffs
+
+        plane = (a * X_mesh + b * Y_mesh + c)
+        corrected_data = Z - plane
             
         return corrected_data
     
@@ -270,7 +278,7 @@ class AFM_Result_Visualizer:
         # topographyの場合、一次元平面でフィッティングして全体の傾斜を補正する。また、高さも反転させ、実際のトポグラフィーに合わせる。
         if property_key == 'topography':
             print('トップグラフィー傾斜補正中...')
-            Z_grid = self._line_flatten_1st_order(Z_grid)
+            Z_grid = self._flatten_plane(Z_grid)
             Z_grid = np.max(Z_grid) - Z_grid  # 高さを反転
             Z_grid -= np.min(Z_grid)  # 最小値を0にシフト
             print('傾斜補正完了。')

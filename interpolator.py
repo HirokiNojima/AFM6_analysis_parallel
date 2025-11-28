@@ -42,8 +42,7 @@ class FastRBFInterpolator2D:
              self.device = torch.device(device)
         print(f"RBF Interpolator running on device: {self.device}")
 
-
-def fit_transform(self, X: np.ndarray, Y: np.ndarray, Z: np.ndarray) -> np.ndarray:
+    def fit_transform(self, X: np.ndarray, Y: np.ndarray, Z: np.ndarray) -> np.ndarray:
         """
         Interpolates scattered points (X, Y, Z) to a regular 2D grid with NaN masking.
         """
