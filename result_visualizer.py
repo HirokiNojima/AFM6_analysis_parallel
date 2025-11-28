@@ -3,7 +3,8 @@ import matplotlib.pyplot as plt
 import os
 from typing import List, Dict, Any, Tuple
 from afm_data import AFMData 
-from interpolator import FastRBFInterpolator2D 
+from interpolator import FastRBFInterpolator2D
+from skimage.filters import threshold_otsu 
 
 class AFM_Result_Visualizer:
     """
@@ -209,6 +210,20 @@ class AFM_Result_Visualizer:
         config = self._get_plot_config(property_key)
         print('設定取得完了')
         
+        # ヤング率解析不良データを削除
+        if property_key == 'youngs_modulus':
+            original_length = len(data_list)
+            # 大津の方法を用いて、空振り判定の押し込み量を算出
+            Delta_values = np.array([getattr(data_obj, property_key) for data_obj in data_list])
+            thres_delta = threshold_otsu(Delta_values[~np.isnan(Delta_values)])
+            data_list = [data for data in data_list if getattr(data, 'delta', np.nan) >= thres_delta]# 押し込み過少なデータを削除
+
+            filtered_length = len(data_list)
+            print(f"ヤング率解析不良データを削除: {original_length - filtered_length} 個のデータが除外されました。")
+            if filtered_length == 0:
+                print("❌ 有効なヤング率データがありません。処理を中止します。")
+                return
+
         # 1. 座標データ (センサー値) とZ値（解析結果）を抽出
         X_coords_um, Y_coords_um, x_range_um, y_range_um = self._extract_physical_coords(data_list)
         print('座標抽出完了')

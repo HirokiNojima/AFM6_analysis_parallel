@@ -43,19 +43,9 @@ class FastRBFInterpolator2D:
         print(f"RBF Interpolator running on device: {self.device}")
 
 
-    def fit_transform(self, X: np.ndarray, Y: np.ndarray, Z: np.ndarray) -> np.ndarray:
+def fit_transform(self, X: np.ndarray, Y: np.ndarray, Z: np.ndarray) -> np.ndarray:
         """
-        Interpolates scattered points (X, Y, Z) to a regular 2D grid.
-
-        Parameters
-        ----------
-        X, Y, Z : np.ndarray
-            1D arrays of same length representing irregular sample positions and values.
-
-        Returns
-        -------
-        Z_grid : np.ndarray
-            2D numpy array of shape grid_size containing interpolated values.
+        Interpolates scattered points (X, Y, Z) to a regular 2D grid with NaN masking.
         """
         
         # 1. Build regular grid (出力画像グリッド)
@@ -81,29 +71,55 @@ class FastRBFInterpolator2D:
         
         print("Starting RBF weighted interpolation on device...")
 
-        # 🌟 4. Epsilon の自動計算ロジック
+        # 🌟 Mod: 距離の基準値（中央値）を先に計算（EpsilonとNaN判定の両方で使うため）
+        # dists_t[:, 0] は各グリッド点から「最も近いデータ点」までの距離
+        dist_to_nearest = dists_t[:, 0]
+        median_dist_to_nearest = torch.median(dist_to_nearest)
+
+        # 4. Epsilon の設定
         if self.epsilon_mode == 'auto':
-            # 'auto' の場合:
-            # グリッドポイントから見て、最も近い生データ点までの距離の中央値を計算
-            median_dist_to_nearest = torch.median(dists_t[:, 0])
-            # その 3.0 倍を epsilon として使用
+            # 'auto' の場合: 最近傍距離の中央値の 3.0 倍
             eps = median_dist_to_nearest * 3.0
-            print(f"Auto-epsilon set: 3.0 * median_dist_to_nearest (3.0 * {median_dist_to_nearest:.4f}) = {eps:.4f}")
+            print(f"Auto-epsilon set: {eps:.4f} (3.0 * median)")
         else:
-            # 'auto' でない場合 (数値が指定された場合)
             eps = float(self.epsilon_mode)
 
         # 5. Gaussian RBF weights: exp(-(d^2 / eps^2))
-        # (以前は 'eps = self.epsilon' だったのを 'eps' 変数を使うように変更)
         weights = torch.exp(-(dists_t / eps) ** 2)
 
         # 6. Gather neighbor values
         local_vals = values_t[idxs_t]
 
         # 7. Weighted interpolation: sum(w*z) / sum(w)
-        Z_interp = (weights * local_vals).sum(dim=1) / weights.sum(dim=1)
+        # ゼロ除算回避（念のため）
+        denom = weights.sum(dim=1)
+        denom[denom == 0] = 1e-9 
+        Z_interp = (weights * local_vals).sum(dim=1) / denom
 
-        # 7. Reshape back to 2D grid (numpy)
+        # 8. 距離によるマスキング (NaN化)
+        # self.max_dist が設定されている場合、しきい値を超えたらNaNにする
+        
+        # クラスの __init__ に self.max_dist = 'auto' または 数値 があると仮定
+        # 未定義の場合は None として扱う
+        max_dist_setting = getattr(self, 'max_dist', None) 
+
+        nan_threshold = None
+        if max_dist_setting == 'auto':
+            # 自動設定: Epsilonより少し広め（例: 平均距離の4-5倍）を閾値にする
+            nan_threshold = median_dist_to_nearest * 5.0
+            print(f"Auto-masking threshold set: {nan_threshold:.4f} (5.0 * median)")
+        elif max_dist_setting is not None:
+            # 数値指定の場合
+            nan_threshold = float(max_dist_setting)
+
+        if nan_threshold is not None:
+            # しきい値より遠いピクセルを NaN に上書き
+            # (PyTorch上で処理するため高速)
+            mask = dist_to_nearest > nan_threshold
+            Z_interp[mask] = float('nan')
+            print(f"Masked {mask.sum().item()} grid points as NaN.")
+
+        # 9. Reshape back to 2D grid (numpy)
         Z_grid = Z_interp.cpu().numpy().reshape(self.grid_size).astype(np.float32)
         
         print("Interpolation complete.")
