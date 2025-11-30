@@ -7,68 +7,55 @@ from data_input import DataReader
 
 # 並列実行のために、モジュールレベルでラッパー関数を定義
 def _analyze_single_curve_wrapper_joblib(
-    index_chunk: List[int], # カーブインデックスのチャンク
+    index_chunk: List[int], 
     folder_path: str,
     metadata_ref: Dict[str, Any]
 ) -> List[AFMData]:
     """
-    カーブインデックスのリストを受け取り、各インデックスでTDMSを読み込み、解析を行う。
-    失敗した場合は、nanで埋められたダミーオブジェクトを返す。
+    チャンク単位でファイルを一度だけ開き、読み込んでから解析する。
     """
     analyzer = AFM_Curve_analyzer()
     reader = DataReader() 
     results_list = []
     
-    for index in index_chunk:
-        data_obj = None # ★ 初期化
-        try:
-            # 1. 読み込み
-            data_obj = reader.read_single_force_curve(
-                folder_path, 
-                index, 
-                metadata_ref
-            )
-            # 2. 解析
-            analyzer.analyze_single_curve(data_obj)
-            
-        except Exception as e:
-            print(f"⚠️ インデックス {index} の解析/読み込みに失敗 (エラー: {e})。NaNとして処理します。")
-            
-            # 読み込み自体が失敗した場合 (data_objがNoneのまま)
-            # プレースホルダーのダミーオブジェクトを作成する
-            if data_obj is None:
-                try:
-                    # メタデータから最低限の座標を取得
-                    xsensor = metadata_ref.get('xsensor', [0.0] * (index + 1))[index]
-                    ysensor = metadata_ref.get('ysensor', [0.0] * (index + 1))[index]
-                    
-                    # ダミーのAFMDataを生成 (中身はすべて nan で初期化済)
-                    data_obj = AFMData(
-                        raw_deflection=np.array([np.nan]), # 空配列の代わりにnan
-                        raw_ztip=np.array([np.nan]),
-                        raw_zsensor=np.array([np.nan]),
-                        metadata_ref=metadata_ref,
-                        folder_path=folder_path,
-                        hyst_curve=np.array([[np.nan, np.nan]]), # 空でない
-                        xsensor=xsensor,
-                        ysensor=ysensor
-                    )
-                except Exception as e_dummy:
-                    # メタデータも壊れている場合の究極のフォールバック
-                    print(f"❌ {index} のダミー作成失敗: {e_dummy}")
-                    data_obj = AFMData(np.array([np.nan]), np.array([np.nan]), np.array([np.nan]),
-                                       metadata_ref, folder_path, np.array([[np.nan, np.nan]]), 0.0, 0.0)
+    # 1. バッチ読み込み (ここでTDMSアクセスは1回のみ発生)
+    # ----------------------------------------------------
+    try:
+        # data_objects は AFMData または None のリスト
+        raw_data_objects = reader.read_batch_force_curves(folder_path, index_chunk, metadata_ref)
+    except Exception as e:
+        print(f"❌ Batch read failed: {e}")
+        # 全滅した場合のダミー処理が必要ならここに記述
+        return []
 
-            # (もし読み込みは成功し、解析だけ失敗した場合、
-            #  data_objはNoneではなく、各プロパティは初期値の np.nan のまま)
+    # 2. メモリ上にあるデータを順次解析
+    # ----------------------------------------------------
+    for i, data_obj in enumerate(raw_data_objects):
+        index = index_chunk[i]
         
-        # ★★★ 施策 ★★★
-        # 解析が完了したら (成功・失敗問わず) メモリを破棄
-        if data_obj:
-            data_obj.clear_raw_data()
-            
-            # ★ リストに追加 (失敗しても追加する)
-            results_list.append(data_obj)
+        if data_obj is None:
+            # 読み込み失敗時のダミー生成処理 (元のコードと同様)
+            try:
+                xsensor = metadata_ref.get('xsensor', [0.0] * (index + 1))[index]
+                ysensor = metadata_ref.get('ysensor', [0.0] * (index + 1))[index]
+                data_obj = AFMData(
+                    np.array([np.nan]), np.array([np.nan]), np.array([np.nan]),
+                    metadata_ref, folder_path, np.array([[np.nan, np.nan]]), 
+                    xsensor, ysensor
+                )
+            except:
+                continue # 完全な失敗
+
+        try:
+            # 解析実行
+            analyzer.analyze_single_curve(data_obj)
+        except Exception as e:
+            print(f"⚠️ Index {index} analysis failed: {e}")
+            # 解析失敗時もオブジェクト自体は残す（値はNaN）
+        
+        # 生データを破棄してメモリ開放
+        data_obj.clear_raw_data()
+        results_list.append(data_obj)
         
     return results_list
 
@@ -76,7 +63,7 @@ class AFM_Map_Analyzer_Joblib:
     """
     フォースマップデータ（AFMDataのリスト）をjoblibで並列処理し解析するクラス。
     """
-    # 🌟 変更点 4: __init__でフォルダパスとメタデータを保持
+    # __init__でフォルダパスとメタデータを保持
     def __init__(self, n_jobs: int = -1, folder_path: str = "", metadata_ref: Dict[str, Any] = None):
         self.n_jobs = n_jobs
         self.folder_path = folder_path
@@ -102,11 +89,11 @@ class AFM_Map_Analyzer_Joblib:
         actual_jobs = cpu_count() if self.n_jobs == -1 else self.n_jobs
         print(f"--- 🚀 フォースマップ解析開始 (joblib並列処理, n_jobs={actual_jobs}) ---")
 
-        # 🌟 変更点 6: 0 から N_curves-1 までのインデックスリストを生成
+        # 0 から N_curves-1 までのインデックスリストを生成
         all_indices = list(range(N_curves))
         
         # データリストをチャンクに分割
-        chunk_size = 50 # 🌟 チャンクサイズは実験的に調整
+        chunk_size = 50 # チャンクサイズは実験的に調整
         data_chunks = [
             all_indices[i:i + chunk_size] 
             for i in range(0, N_curves, chunk_size)
@@ -118,7 +105,7 @@ class AFM_Map_Analyzer_Joblib:
             verbose=1,
             backend='loky'
         )(
-            # 🌟 変更点 7: ラッパー関数に追加の引数を渡す
+            # ラッパー関数に追加の引数を渡す
             delayed(_analyze_single_curve_wrapper_joblib)(
                 chunk, 
                 self.folder_path, 

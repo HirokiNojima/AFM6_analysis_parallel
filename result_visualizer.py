@@ -3,7 +3,10 @@ import matplotlib.pyplot as plt
 import os
 from typing import List, Dict, Any, Tuple
 from afm_data import AFMData 
-from interpolator import FastRBFInterpolator2D 
+from interpolator import FastRBFInterpolator2D
+from skimage.filters import threshold_otsu 
+from scipy.ndimage import median_filter, gaussian_filter
+import interpolator_linear
 
 class AFM_Result_Visualizer:
     """
@@ -148,9 +151,9 @@ class AFM_Result_Visualizer:
 
         return ratio > threshold
     
-    def _line_flatten_1st_order(self, data_2d):
+    def _flatten_plane(self, data_2d):
         """
-        2次元配列に対して、行ごとに1次補正（傾きと切片の除去）を行う関数
+        2次元配列に対して、面でのフィッティングを行い、全体の傾斜を補正する。
         
         Parameters:
             data_2d (np.ndarray): 補正前の2次元高さデータ (Height Map)
@@ -166,23 +169,81 @@ class AFM_Result_Visualizer:
         
         # X軸の座標配列を作成 (0, 1, 2, ... cols-1)
         x = np.arange(cols)
-        
-        # --- 行ごとのループ処理 ---
-        for i in range(rows):
-            # 1行分のデータを取得
-            y_data = corrected_data[i, :]
-            
-            # 1次多項式 (y = ax + b) の係数を計算 (最小二乗法)
-            # polyfit(x, y, 1) は [傾きa, 切片b] を返します
-            slope, intercept = np.polyfit(x, y_data, 1)
-            
-            # フィッティングした直線を作成
-            fitted_line = slope * x + intercept
-            
-            # 元データからフィッティング直線を引く
-            corrected_data[i, :] = y_data - fitted_line
+
+
+        # Fit and subtract a first-order plane z = a*x + b*y + c from the entire 2D map
+        # X: columns (0..cols-1), Y: rows (0..rows-1)
+        y = np.arange(rows)
+        X_mesh, Y_mesh = np.meshgrid(x, y)  # shape (rows, cols)
+
+        Z = corrected_data.astype(np.float64)
+        Z_flat = Z.ravel()
+        X_flat = X_mesh.ravel()
+        Y_flat = Y_mesh.ravel()
+
+        mask = np.isfinite(Z_flat)
+        if mask.sum() < 3:
+            # Not enough valid points to fit a plane; return original copy
+            return corrected_data
+
+        A = np.column_stack((X_flat[mask], Y_flat[mask], np.ones(mask.sum())))
+        coeffs, *_ = np.linalg.lstsq(A, Z_flat[mask], rcond=None)
+        a, b, c = coeffs
+
+        plane = (a * X_mesh + b * Y_mesh + c)
+        corrected_data = Z - plane
             
         return corrected_data
+    
+    import numpy as np
+
+    def _remove_scan_line_noise(self, image_data, method='median', window_ratio=0.2):
+        """
+        縦方向の地形変化（うねり・段差）を保護しつつ、横縞ノイズを除去する関数。
+        
+        Parameters:
+        -----------
+        image_data : 2D array
+        method : 'median' or 'mean'
+            各行の代表値の計算方法。通常は 'median' が外れ値に強く推奨。
+        window_ratio : float (0.0 < r < 1.0)
+            縦方向のトレンドを計算する際の窓サイズの割合。
+            画像の高さ(h)の何割を「滑らかさの基準」とするか。
+            - 小さい(0.01): 細かい変化も「地形」とみなして残す（ノイズが消えにくい）
+            - 大きい(0.5): 大きなうねりのみを「地形」とみなす（ノイズは消えるが、緩やかな坂も消えるかも）
+        """
+        h, w = image_data.shape
+        corrected = image_data.copy()
+        
+        # 1. 各行の代表値（オフセット）を計算
+        if method == 'median':
+            offsets = np.median(corrected, axis=1)
+        else:
+            offsets = np.mean(corrected, axis=1)
+
+        # 2. 窓サイズの決定 (画像の高さに対する割合で決める)
+        # sigma はウィンドウサイズの約 1/6 程度に設定すると自然な平滑化になります
+        window_size = int(h * window_ratio)
+        sigma = window_size / 6.0 
+        
+        if window_size < 3:
+            window_size = 3 # 最小サイズ
+            sigma = 1.0
+
+        # 3. トレンド（本来の縦方向の変化）を抽出
+        # 【変更点】median_filterだとトレンドが階段状になるため、
+        #  滑らかな gaussian_filter を使用します。
+        #  これにより「オフセットの急激な変化」だけが浮き彫りになります。
+        smooth_trend = gaussian_filter(offsets, sigma=sigma)
+        
+        # 4. ノイズ成分の抽出
+        # Raw(ギザギザ) - Smooth(うねり) = Noise(激しい横縞)
+        stripe_noise = offsets - smooth_trend
+        
+        # 5. 補正実行
+        corrected = corrected - stripe_noise.reshape(-1, 1)
+        
+        return corrected
     
     # --- 保存メソッド ---
 
@@ -209,6 +270,21 @@ class AFM_Result_Visualizer:
         config = self._get_plot_config(property_key)
         print('設定取得完了')
         
+        # ヤング率解析不良データを削除
+        if property_key == 'youngs_modulus':
+            original_length = len(data_list)
+            # 大津の方法を用いて、空振り判定の押し込み量を算出
+            Delta_values = np.array([getattr(data_obj, 'delta', np.nan) for data_obj in data_list])
+            thres_delta = threshold_otsu(Delta_values[~np.isnan(Delta_values)]) * 0.5 # 係数に関しては実験的に調整
+            print(f"ヤング率解析不良データ削除のための押し込み量閾値: {thres_delta} nm")
+            data_list = [data for data in data_list if getattr(data, 'delta', np.nan) >= thres_delta]# 押し込み過少なデータを削除
+
+            filtered_length = len(data_list)
+            print(f"ヤング率解析不良データを削除: {original_length - filtered_length} 個のデータが除外されました。")
+            if filtered_length == 0:
+                print("❌ 有効なヤング率データがありません。処理を中止します。")
+                return
+
         # 1. 座標データ (センサー値) とZ値（解析結果）を抽出
         X_coords_um, Y_coords_um, x_range_um, y_range_um = self._extract_physical_coords(data_list)
         print('座標抽出完了')
@@ -246,19 +322,19 @@ class AFM_Result_Visualizer:
             y_range_plot = y_range_um
             x_range_plot = x_range_um
             
-        # 3. RBF補間の実行 (1ライン/2D両対応)
-        kwargs = interpolator_kwargs if interpolator_kwargs is not None else {}
-        interpolator = FastRBFInterpolator2D(grid_size=grid_size, **kwargs)
-
-        Z_grid = interpolator.fit_transform(X_coords_um, Y_coords_um, Z_values)
-
+        # 線形補間オブジェクトの作成
+        Z_grid = interpolator_linear.afm_to_grid_linear(X_coords_um, Y_coords_um, Z_values, pixel_shape=grid_size)
         # topographyの場合、一次元平面でフィッティングして全体の傾斜を補正する。また、高さも反転させ、実際のトポグラフィーに合わせる。
         if property_key == 'topography':
             print('トップグラフィー傾斜補正中...')
-            Z_grid = self._line_flatten_1st_order(Z_grid)
+            Z_grid = self._flatten_plane(Z_grid)
             Z_grid = np.max(Z_grid) - Z_grid  # 高さを反転
             Z_grid -= np.min(Z_grid)  # 最小値を0にシフト
             print('傾斜補正完了。')
+
+        # ラインレベリングを実施
+        print('ラインレベリング中...')
+        Z_grid = self._remove_scan_line_noise(Z_grid, method='median')
             
         # 4. 2Dマップ配列 (.npz) の保存
         map_npz_path = os.path.join(output_dir, f'{base_filename}_{property_key}_map.npz')
