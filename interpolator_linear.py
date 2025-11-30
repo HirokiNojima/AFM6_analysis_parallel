@@ -40,13 +40,11 @@ def afm_to_grid_linear(x_sensor, y_sensor, values, pixel_shape=(256, 256)):
 
     # 3. 線形補間 (Delaunay三角分割) の実行
     # fill_value=np.nan にして、外挿領域を明確に区別します
-    print("1/2: 線形補間を実行中... (データ内部の高精度化)")
     interp_linear = LinearNDInterpolator(points, z, fill_value=np.nan)
     grid_z = interp_linear(xx, yy)
 
     # 4. NaN領域（外挿部分）の穴埋め処理
     if np.isnan(grid_z).any():
-        print("2/2: 外挿領域(NaN)を最近傍値で埋めています...")
         
         # NearestNDInterpolator は全領域で値を返せる（NaNにならない）
         interp_nearest = NearestNDInterpolator(points, z)

@@ -260,14 +260,12 @@ class AFM_Result_Visualizer:
         RBF補間を用いて高解像度マップを生成し、PNG画像とNPZ 2D配列として保存する。
         1ラインスキャン時もRBF補間を行い、X軸センサー値、Y軸データインデックスとしてプロットする。
         """
-        print(f"--- 🖼️ 高解像度 {property_key} マップ生成・保存 ---")
         if not data_list:
             print("警告: データリストが空です。")
             return
 
         os.makedirs(output_dir, exist_ok=True)
         config = self._get_plot_config(property_key)
-        print('設定取得完了')
         
         # ヤング率解析不良データを削除
         if property_key == 'youngs_modulus':
@@ -275,32 +273,26 @@ class AFM_Result_Visualizer:
             # 大津の方法を用いて、空振り判定の押し込み量を算出
             Delta_values = np.array([getattr(data_obj, 'delta', np.nan) for data_obj in data_list])
             thres_delta = threshold_otsu(Delta_values[~np.isnan(Delta_values)]) * 0.5 # 係数に関しては実験的に調整
-            print(f"ヤング率解析不良データ削除のための押し込み量閾値: {thres_delta} nm")
             data_list = [data for data in data_list if getattr(data, 'delta', np.nan) >= thres_delta]# 押し込み過少なデータを削除
 
             filtered_length = len(data_list)
-            print(f"ヤング率解析不良データを削除: {original_length - filtered_length} 個のデータが除外されました。")
             if filtered_length == 0:
                 print("❌ 有効なヤング率データがありません。処理を中止します。")
                 return
 
         # 1. 座標データ (センサー値) とZ値（解析結果）を抽出
         X_coords_um, Y_coords_um, x_range_um, y_range_um = self._extract_physical_coords(data_list)
-        print('座標抽出完了')
         N_total = len(data_list)
         nx, ny = self._get_map_dimensions(data_list)
-        print('マップ寸法取得完了')
 
         try:
             Z_values = np.array([getattr(data_obj, property_key) for data_obj in data_list])
         except AttributeError:
             print(f"エラー: AFMDataオブジェクトに属性 '{property_key}' が見つかりません。")
             return
-        print('Z値抽出完了')
         
         # 2. 1ラインスキャン判定とRBF補間用のY座標設定
         is_line_scan_by_range = self._is_line_scan_by_range(x_range_um, y_range_um, range_threshold)
-        print(f'1ラインスキャン判定完了: {is_line_scan_by_range}')
         
         if is_line_scan_by_range:
             print("--- ⚠️ 範囲比率から1ラインスキャンを検出。Y軸をデータインデックスに置換し、RBF補間を継続。 ---")
@@ -325,14 +317,11 @@ class AFM_Result_Visualizer:
         Z_grid = interpolator_linear.afm_to_grid_linear(X_coords_um, Y_coords_um, Z_values, pixel_shape=grid_size)
         # topographyの場合、一次元平面でフィッティングして全体の傾斜を補正する。また、高さも反転させ、実際のトポグラフィーに合わせる。
         if property_key == 'topography':
-            print('トップグラフィー傾斜補正中...')
             Z_grid = self._flatten_plane(Z_grid)
             Z_grid = np.max(Z_grid) - Z_grid  # 高さを反転
             Z_grid -= np.min(Z_grid)  # 最小値を0にシフト
-            print('傾斜補正完了。')
 
         # ラインレベリングを実施
-        print('ラインレベリング中...')
         Z_grid = self._remove_scan_line_noise(Z_grid, method='median')
             
         # 4. 2Dマップ配列 (.npz) の保存
@@ -398,14 +387,8 @@ class AFM_Result_Visualizer:
             return
 
         os.makedirs(output_dir, exist_ok=True)
-        
-        # 🌟 変更点 1: X/Y座標をキーリストから除外
         keys = ['topography', 'youngs_modulus', 'delta', 'peak_force', 'hysteresis_area', 'cp_z_position']
-        
-        # 🌟 変更点 2: 座標データ dict の作成を削除
         data_to_save = {}
-        
-        # 🌟 変更点 3: データ集約の高速化
         N = len(data_list)
         
         for key in keys:
