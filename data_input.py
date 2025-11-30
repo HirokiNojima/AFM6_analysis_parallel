@@ -145,52 +145,63 @@ class DataReader:
             raise RuntimeError(f'{file_path} の読み込みに失敗しました: {e}')
         return tip_offsets
     
-    # 単一のインデックスのフォースカーブを読み込むメソッド
-    def read_single_force_curve(self, folder_path: str, index: int, metadata: Dict[str, Any]) -> AFMData:
+    def read_batch_force_curves(self, folder_path: str, indices: List[int], metadata: Dict[str, Any]) -> List[AFMData]:
         """
-        TDMSファイルから指定されたインデックスのフォースカーブデータのみを読み込み、AFMDataオブジェクトを生成する。
+        TDMSファイルを一度だけ開き、指定された複数のインデックスのデータをまとめて読み込む。
+        これによりI/Oオーバーヘッドを劇的に削減する。
         """
         N_points = metadata['FCあたりのデータ取得点数']
         file_path = os.path.join(folder_path, "ForceCurve.tdms")
         
-        # 3. ヒステリシス補正カーブの読み込み
+        # 共通データの準備（ヒステリシス、チップオフセットなど）
         hyst_curve = self.read_hysteresis_curve(metadata, script_file_path=__file__)
+        all_tip_offsets = self._read_tipoffsets(folder_path)
         
-        tip_offset = self._read_tipoffsets(folder_path)[index]
+        data_objects = []
 
         try:
+            # ★ ファイルオープンは一度だけ
             with TdmsFile.open(file_path) as tdms_file:
-                # 4. TDMSファイルから指定インデックスのデータのみを読み込む
-                start_idx = index * N_points
-                end_idx = start_idx + N_points
-                
-                # チャネルオブジェクトに直接スライスを適用する
                 deflection_channel = tdms_file["Forcecurve"]["Deflection"]
                 ZTip_input_channel = tdms_file["Forcecurve"]["ZTip_input"]
                 Zsensor_channel = tdms_file["Forcecurve"]["ZSensor"]
-
-                deflection_data = deflection_channel[start_idx:end_idx] 
-                ZTip_input_data = ZTip_input_channel[start_idx:end_idx]
-                Zsensor_data = Zsensor_channel[start_idx:end_idx]
-                xsensor = metadata['xsensor'][index]
-                ysensor = metadata['ysensor'][index]
-
-                # 5. AFMDataオブジェクトの生成 (省略)
-                data_obj = AFMData(
-                    raw_deflection=deflection_data,
-                    raw_ztip=ZTip_input_data,
-                    raw_zsensor=Zsensor_data,
-                    metadata_ref=metadata,
-                    folder_path=folder_path,
-                    hyst_curve=hyst_curve,
-                    xsensor=xsensor,
-                    ysensor=ysensor,
-                    tip_offset=tip_offset
-                )
-                return data_obj
                 
+                # ループ内でファイルハンドルを開いたまま読み込み続ける
+                for index in indices:
+                    try:
+                        start_idx = index * N_points
+                        end_idx = start_idx + N_points
+                        
+                        # チャンネルからスライスでデータ取得
+                        # (nptdmsは賢いので、必要な部分だけディスクからシークして読みます)
+                        deflection_data = deflection_channel[start_idx:end_idx]
+                        ZTip_input_data = ZTip_input_channel[start_idx:end_idx]
+                        Zsensor_data = Zsensor_channel[start_idx:end_idx]
+                        
+                        xsensor = metadata['xsensor'][index]
+                        ysensor = metadata['ysensor'][index]
+                        tip_offset = all_tip_offsets[index]
+
+                        data_obj = AFMData(
+                            raw_deflection=deflection_data,
+                            raw_ztip=ZTip_input_data,
+                            raw_zsensor=Zsensor_data,
+                            metadata_ref=metadata,
+                            folder_path=folder_path,
+                            hyst_curve=hyst_curve,
+                            xsensor=xsensor,
+                            ysensor=ysensor,
+                            tip_offset=tip_offset
+                        )
+                        data_objects.append(data_obj)
+                    except Exception as e:
+                        print(f"⚠️ Index {index} read failed inside batch: {e}")
+                        data_objects.append(None) # 失敗時はNoneを入れておく
+                        
+            return data_objects
+            
         except Exception as e:
-            raise RuntimeError(f"インデックス {index} のTDMS読み込みに失敗しました: {e}")
+            raise RuntimeError(f"TDMS batch open failed: {e}")
  
 # --- 使用例 ---
 if __name__ == '__main__':
