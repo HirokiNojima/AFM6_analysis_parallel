@@ -2,8 +2,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import os
 from typing import List, Dict, Any, Tuple
-from afm_data import AFMData 
-from interpolator import FastRBFInterpolator2D
+from afm_data import AFMData
 from skimage.filters import threshold_otsu 
 from scipy.ndimage import median_filter, gaussian_filter
 import interpolator_linear
