@@ -6,8 +6,6 @@ from joblib import Parallel, delayed, cpu_count
 from data_input import DataReader
 
 # 並列実行のために、モジュールレベルでラッパー関数を定義
-# map_analyzer.py の修正
-
 def _analyze_single_curve_wrapper_joblib(
     index_chunk: List[int], 
     folder_path: str,
@@ -65,7 +63,7 @@ class AFM_Map_Analyzer_Joblib:
     """
     フォースマップデータ（AFMDataのリスト）をjoblibで並列処理し解析するクラス。
     """
-    # 🌟 変更点 4: __init__でフォルダパスとメタデータを保持
+    # __init__でフォルダパスとメタデータを保持
     def __init__(self, n_jobs: int = -1, folder_path: str = "", metadata_ref: Dict[str, Any] = None):
         self.n_jobs = n_jobs
         self.folder_path = folder_path
@@ -91,11 +89,11 @@ class AFM_Map_Analyzer_Joblib:
         actual_jobs = cpu_count() if self.n_jobs == -1 else self.n_jobs
         print(f"--- 🚀 フォースマップ解析開始 (joblib並列処理, n_jobs={actual_jobs}) ---")
 
-        # 🌟 変更点 6: 0 から N_curves-1 までのインデックスリストを生成
+        # 0 から N_curves-1 までのインデックスリストを生成
         all_indices = list(range(N_curves))
         
         # データリストをチャンクに分割
-        chunk_size = 50 # 🌟 チャンクサイズは実験的に調整
+        chunk_size = 50 # チャンクサイズは実験的に調整
         data_chunks = [
             all_indices[i:i + chunk_size] 
             for i in range(0, N_curves, chunk_size)
@@ -107,7 +105,7 @@ class AFM_Map_Analyzer_Joblib:
             verbose=1,
             backend='loky'
         )(
-            # 🌟 変更点 7: ラッパー関数に追加の引数を渡す
+            # ラッパー関数に追加の引数を渡す
             delayed(_analyze_single_curve_wrapper_joblib)(
                 chunk, 
                 self.folder_path, 

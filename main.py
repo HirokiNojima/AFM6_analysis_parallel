@@ -134,7 +134,7 @@ if __name__ == '__main__':
     invols_nm_per_volt = float(input("input InvOLS (nm/V): "))
     
     # 高解像度マップのグリッドサイズ
-    map_grid_size = [100, 100] 
+    map_grid_size = [256, 256] 
     
     # 並列処理のコア数 (-1: 全コア)
     num_jobs = -1 
