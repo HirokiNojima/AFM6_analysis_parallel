@@ -1,6 +1,7 @@
 # %%
 import numpy as np
 import matplotlib.pyplot as plt
+import warnings
 
 def calc_touch_point(force: np.ndarray, z_distance: np.ndarray) -> int:
     """
@@ -315,10 +316,12 @@ def calc_young_snnedon(app_force, delta):
     tip_half_angle = 17.5  # カンチレバー半角[°]
     A = (math.pi * (1 - poisson_ratio ** 2)) / (2 * math.tan(math.radians(tip_half_angle)))
     force_fit = abs(app_force) ** (1 / 2) # 直線化
-    try:
-        coe = np.polyfit(delta, force_fit, 1)
-    except:
-        coe = [1e-6, 0]
+    with warnings.catch_warnings(): # 多項式フィッティングエラーの警告を無視。
+        warnings.simplefilter("ignore", np.RankWarning)
+        try:
+            coe = np.polyfit(delta, force_fit, 1)
+        except:
+            coe = [1e-6, 0]
     youngs_modulus = A * coe[0] ** 2
     return youngs_modulus
 
