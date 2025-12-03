@@ -39,7 +39,6 @@ def main_analysis_workflow(
     base_dir = Path(folder_path)
     output_path = base_dir / output_dir_name
     os.makedirs(output_path, exist_ok=True)
-    base_filename = base_dir.name # データフォルダ名をファイル名プレフィックスに使用
 
     print(f"==================================================")
     print(f"🚀 AFM Force Map Analysis Started")
@@ -88,8 +87,7 @@ def main_analysis_workflow(
     # 解析結果 (1D配列) のNPZ保存
     print(f"--- 💾 解析データのNPZ保存中 ---")
     result_visualizer.export_analysis_data_npz(
-        analyzed_data_list, 
-        base_filename, 
+        analyzed_data_list,
         str(output_path)
     )
 
@@ -109,7 +107,6 @@ def main_analysis_workflow(
             result_visualizer.create_and_save_high_resolution_map(
                 analyzed_data_list, 
                 property_key=prop, 
-                base_filename=base_filename, 
                 output_dir=str(output_path),
                 grid_size=tuple(grid_size)
             )
@@ -134,7 +131,7 @@ if __name__ == '__main__':
     invols_nm_per_volt = float(input("input InvOLS (nm/V): "))
     
     # 高解像度マップのグリッドサイズ
-    map_grid_size = [256, 256] 
+    map_grid_size = [50, 50] 
     
     # 並列処理のコア数 (-1: 全コア)
     num_jobs = -1 

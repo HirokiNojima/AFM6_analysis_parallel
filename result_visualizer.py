@@ -249,11 +249,9 @@ class AFM_Result_Visualizer:
     def create_and_save_high_resolution_map(
         self, 
         data_list: List[AFMData], 
-        property_key: str, 
-        base_filename: str, 
+        property_key: str,
         output_dir: str, 
         grid_size: Tuple[int, int] = (512, 512),
-        interpolator_kwargs: Dict[str, Any] = None,
         range_threshold: float = 30.0
     ):
         """
@@ -269,7 +267,6 @@ class AFM_Result_Visualizer:
         
         # ヤング率解析不良データを削除
         if property_key == 'youngs_modulus':
-            original_length = len(data_list)
             # 大津の方法を用いて、空振り判定の押し込み量を算出
             Delta_values = np.array([getattr(data_obj, 'delta', np.nan) for data_obj in data_list])
             thres_delta = threshold_otsu(Delta_values[~np.isnan(Delta_values)]) * 0.5 # 係数に関しては実験的に調整
@@ -325,7 +322,7 @@ class AFM_Result_Visualizer:
         Z_grid = self._remove_scan_line_noise(Z_grid, method='median')
             
         # 4. 2Dマップ配列 (.npz) の保存
-        map_npz_path = os.path.join(output_dir, f'{base_filename}_{property_key}_map.npz')
+        map_npz_path = os.path.join(output_dir, f'{property_key}_map.npz')
         # Z_gridは補間後の高解像度データ
         np.savez_compressed(
             map_npz_path, 
@@ -368,17 +365,17 @@ class AFM_Result_Visualizer:
         if is_line_scan_by_range:
             plt.ylabel('Scan Pass Number') # 💡 Y軸ラベルを修正
             plt.title(f"{config['title']} (Line Scan Map)")
-            image_path = os.path.join(output_dir, f"{base_filename}_{property_key}_linescan_{config['fname']}")
+            image_path = os.path.join(output_dir, f"{property_key}_linescan_{config['fname']}")
         else:
             plt.ylabel(r'Y Position ($\mu$m)')
             plt.title(config['title'])
-            image_path = os.path.join(output_dir, f"{base_filename}_{property_key}_{config['fname']}")
+            image_path = os.path.join(output_dir, f"{property_key}_{config['fname']}")
             
         plt.savefig(image_path, dpi=300, bbox_inches='tight')
         plt.close()
         print(f"✅ 高解像度画像 (.png) を保存: {image_path}")
 
-    def export_analysis_data_npz(self, data_list: List[AFMData], base_filename: str, output_dir: str):
+    def export_analysis_data_npz(self, data_list: List[AFMData], output_dir: str):
         """
         解析値の1D配列を統合し、NPZファイルとして保存する。
         """
@@ -398,7 +395,7 @@ class AFM_Result_Visualizer:
                 data_array[i] = getattr(data_obj, key) 
             data_to_save[key] = data_array
             
-        npz_path = os.path.join(output_dir, f'{base_filename}_analysis_data.npz')
+        npz_path = os.path.join(output_dir, f'analysis_data.npz')
         # np.savez_compressed を使用
         np.savez_compressed(npz_path, **data_to_save)
         print(f"✅ 解析データNPZ (1D配列) を保存: {npz_path}")
