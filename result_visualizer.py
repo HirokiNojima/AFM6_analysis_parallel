@@ -265,18 +265,6 @@ class AFM_Result_Visualizer:
         os.makedirs(output_dir, exist_ok=True)
         config = self._get_plot_config(property_key)
         
-        # ヤング率解析不良データを削除
-        if property_key == 'youngs_modulus':
-            # 大津の方法を用いて、空振り判定の押し込み量を算出
-            Delta_values = np.array([getattr(data_obj, 'delta', np.nan) for data_obj in data_list])
-            thres_delta = threshold_otsu(Delta_values[~np.isnan(Delta_values)]) * 0.5 # 係数に関しては実験的に調整
-            data_list = [data for data in data_list if getattr(data, 'delta', np.nan) >= thres_delta]# 押し込み過少なデータを削除
-
-            filtered_length = len(data_list)
-            if filtered_length == 0:
-                print("❌ 有効なヤング率データがありません。処理を中止します。")
-                return
-
         # 1. 座標データ (センサー値) とZ値（解析結果）を抽出
         X_coords_um, Y_coords_um, x_range_um, y_range_um = self._extract_physical_coords(data_list)
         N_total = len(data_list)
@@ -309,6 +297,18 @@ class AFM_Result_Visualizer:
         else:
             y_range_plot = y_range_um
             x_range_plot = x_range_um
+
+        # ヤング率解析不良データを削除
+        if property_key == 'youngs_modulus':
+            # 大津の方法を用いて、空振り判定の押し込み量を算出
+            Delta_values = np.array([getattr(data_obj, 'delta', np.nan) for data_obj in data_list])
+            thres_delta = threshold_otsu(Delta_values[~np.isnan(Delta_values)]) * 0.5 # 係数に関しては実験的に調整
+            data_list = [data for data in data_list if getattr(data, 'delta', np.nan) >= thres_delta]# 押し込み過少なデータを削除
+
+            filtered_length = len(data_list)
+            if filtered_length == 0:
+                print("❌ 有効なヤング率データがありません。処理を中止します。")
+                return
             
         # 線形補間オブジェクトの作成
         Z_grid = interpolator_linear.afm_to_grid_linear(X_coords_um, Y_coords_um, Z_values, pixel_shape=grid_size)
