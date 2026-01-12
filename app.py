@@ -20,7 +20,7 @@ from napari_matplotlib.base import NapariMPLWidget
 # --- 既存のAFM解析モジュール ---
 from data_input import DataReader
 from processing import AFM_Curve_analyzer
-from interpolator import FastRBFInterpolator2D
+from interpolator_linear import FastRBFInterpolator2D
 from result_visualizer import AFM_Result_Visualizer
 from afm_data import AFMData
 
@@ -178,7 +178,7 @@ class AFMViewer:
             
             # (a) NPZ ロード
             base_filename = folder_path.name
-            npz_filename = f"{base_filename}_analysis_data.npz"
+            npz_filename = f"analysis_data.npz"
             npz_path = folder_path / "AFM_Analysis_Results" / npz_filename
             self.data["analysis_results"] = np.load(npz_path)
             self.data["available_maps"] = list(self.data["analysis_results"].keys())
