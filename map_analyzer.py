@@ -93,7 +93,7 @@ class AFM_Map_Analyzer_Joblib:
         all_indices = list(range(N_curves))
         
         # データリストをチャンクに分割
-        chunk_size = 100 # チャンクサイズは実験的に調整
+        chunk_size = 200 # チャンクサイズは実験的に調整
         data_chunks = [
             all_indices[i:i + chunk_size] 
             for i in range(0, N_curves, chunk_size)

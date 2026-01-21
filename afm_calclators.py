@@ -3,18 +3,55 @@ import numpy as np
 import matplotlib.pyplot as plt
 import warnings
 
+def _make_dummy_fc(n_points=800, z_max=1e-6, noise=2e-9, seed=0):
+    """
+    ダミーのフォースカーブを作成する。テスト用。
+    Parameters
+    ----------
+    n_points : int
+        フォースカーブのデータ点数。
+    z_max : float   
+        Z距離の最大値。[m]
+    noise : float
+        フォースデータに加えるガウスノイズの標準偏差。[N]
+    seed : int
+        乱数シード。
+    Returns
+    -------
+    tuple
+        フォースデータとZ距離データのタプル。
+    """
+    rng = np.random.default_rng(seed)
+    # Z軸: アプローチ→リトラクト
+    z_app = np.linspace(0, z_max, n_points // 2, endpoint=True)
+    z_ret = np.linspace(z_max, 0, n_points - len(z_app), endpoint=True)
+    z = np.concatenate([z_app, z_ret])
+
+    # 理想力: 接触前は0、接触後は線形＋少し曲げ
+    contact_z = 0.3 * z_max
+    k = 0.05  # 勾配 [N/m]
+    force_app = np.where(z_app > contact_z, k * (z_app - contact_z), 0.0)
+    force_ret = np.where(z_ret > contact_z, k * (z_ret - contact_z), 0.0)
+    # 軽いヒステリシスを加える
+    force_ret = force_ret * 0.9
+
+    force = np.concatenate([force_app, force_ret])
+    # ノイズ付加
+    force += rng.normal(0, noise, size=force.shape)
+    return force, z
+
 def calc_touch_point(force: np.ndarray, z_distance: np.ndarray) -> int:
     """
-    ベースライン補正後のフォースカーブから、
-    最も静かな領域をベースラインと定義し、
-    そこから逸脱する点をコンタクトポイントとして検出する。
+    ベースライン補正後のフォースカーブを用いて、
+    フォースカーブ開始地点と値最大点から作成した直線からの距離が最も遠い点を検出する。
+    ノイズ対策のため、最初にローパスフィルタをかけて高周波成分を除去。
 
     Parameters
     ----------
     force : np.ndarray
-        ベースライン補正済みのフォースデータ（アプローチカーブ）。
+        ベースライン補正済みのフォースデータ（片道）。
     z_distance : np.ndarray
-        Z距離データ（アプローチカーブ）。
+        Z距離データ（片道）。
 
     Returns
     -------
@@ -24,65 +61,37 @@ def calc_touch_point(force: np.ndarray, z_distance: np.ndarray) -> int:
     n_points = len(force)
     if n_points < 50: # データ点が少なすぎる
         return np.argmax(force) # フォールバック: 最大点をCPとする (苦肉の策)
-
-    # --- 1. 真のベースライン領域を特定 ---
-    # ノイズ評価ウィンドウサイズ (カーブ長の30% or 50点)
-    window_size = max(50, int(n_points * 0.3))
-    if window_size >= n_points:
-        window_size = n_points // 2
-
-    # 最も静かな領域の「開始インデックス」を取得
-    baseline_start_idx = _find_quietest_region_idx(force, window_size)
-    baseline_end_idx = min(baseline_start_idx + window_size, n_points - 1)
-
-    # --- 2. ベースライン領域のノイズレベルを計算 ---
-    baseline_data = force[baseline_start_idx:baseline_end_idx]
-    if len(baseline_data) < 10:
-        return np.argmax(force) # フォールバック
-
-    noise_std = np.std(baseline_data)
-    noise_mean = np.mean(baseline_data)
+    # ローパスフィルタ (移動平均)
+    window_size = max(5, n_points // 50)  # データ点数の2%または5点、どちらか大きい方
+    force = np.convolve(force, np.ones(window_size)/window_size, mode='same')
     
-    # 閾値を設定 (平均 + 5σ)
-    # 5シグマと高めに設定し、ノイズ領域での誤検出を防ぐ
-    threshold = noise_mean + 5.0 * noise_std 
-    
-    # 平滑化 (任意だが推奨)
-    try:
-        force_smooth = uniform_filter1d(force.astype(np.float64), size=5, mode='reflect')
-    except:
-        force_smooth = force
+    # 直線の2点
+    x1, y1 = z_distance[0], force[0]
+    x2, y2 = z_distance[np.argmax(force)], force[np.argmax(force)]
 
-    # --- 3. 閾値を超えた最初の点を探す ---
-    
-    # 検索開始位置: ベースライン領域の「終了位置」
-    search_start_idx = baseline_end_idx
+    # 直線の方程式: Ax + By + C = 0
+    A = y2 - y1
+    B = x1 - x2
+    C = x2 * y1 - x1 * y2
 
-    # ベースライン終了位置以降で、閾値を「上回った」点のインデックスを探す
-    candidates = np.where(force_smooth[search_start_idx:] > threshold)[0]
+    # 分母（直線の長さ）の計算
+    denominator = np.sqrt(A**2 + B**2)
     
-    if len(candidates) > 0:
-        # 候補が見つかった場合
-        # candidates[0] は search_start_idx からの相対インデックス
-        touch_index = candidates[0] + search_start_idx
+    # ゼロ除算を防ぐ（2点が同じ位置にある場合のフォールバック）
+    if denominator < 1e-10:
+        # 2点が同じ位置 → 距離計算できないので最大値を返す
+        touch_index = np.argmax(force)
     else:
-        # 閾値を超える点が見つからなかった場合
-        # (例: 接触しなかった or ベースラインがカーブの最後だった)
-        # フォールバック: 最大押し込み点（＝カーブの最後）をCPとする
-        touch_index = n_points - 1
+        # 各点から直線までの距離を計算
+        distances = np.abs(A * z_distance + B * force + C) / denominator
+        touch_index = np.argmax(distances)
+
     return touch_index
+
 
 if __name__ == "__main__":
     # テスト用のダミーデータ
-    # z_distance = np.linspace(0, 100, 500)
-    # force = np.piecewise(z_distance, [z_distance < 30, (z_distance >= 30) & (z_distance < 70), z_distance >= 70],
-    #                      [lambda z: 0.1 * z + np.random.normal(0, 0.5, z.shape),
-    #                       lambda z: 3 + np.random.normal(0, 0.5, z.shape),
-    #                       lambda z: 0.2 * z - 11 + np.random.normal(0, 0.5, z.shape)])
-    data = np.loadtxt(r"C:\Users\icell\Desktop\nojima_python\AFM6analysis_20251024\testdata\approach.txt")
-    force = data[:,0]
-    z_distance = data[:,1]
-
+    force, z_distance = _make_dummy_fc()
     touch_index = calc_touch_point(force, z_distance)
     plt.plot(z_distance, force, label="Force Curve")
     plt.plot(z_distance[touch_index], force[touch_index], 'ro', label="Touch Point")
@@ -142,10 +151,8 @@ def correct_hyst(ztip , hyst_curve):
 if __name__ == "__main__":
     import matplotlib.pyplot as plt
     # テスト
-    ztip = np.loadtxt(r"C:\Users\icell\Desktop\nojima_python\AFM6analysis_20251024\testdata\FCdata.txt")
-    hyst_curve = np.loadtxt(r"C:\Users\icell\Desktop\nojima_python\git\AFM6_analysis_program\module\補正用データ\3kHz\mean_FCdata.txt")
-    corrected_data = correct_hyst(ztip[:, 1], hyst_curve)
-    plt.plot(corrected_data, ztip[:, 0], label="Corrected Data")
+    force, ztip = _make_dummy_fc()
+    plt.plot(ztip, force, label="Corrected Data")
     plt.show()
     # 2025年10月30日：作成完了。
 
