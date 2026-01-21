@@ -2,6 +2,8 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import warnings
+import scipy.ndimage as ndimage
+
 
 def _make_dummy_fc(n_points=800, z_max=1e-6, noise=2e-9, seed=0):
     """
@@ -58,16 +60,20 @@ def calc_touch_point(force: np.ndarray, z_distance: np.ndarray) -> int:
     int
         検出されたコンタクトポイントのインデックス。
     """
-    n_points = len(force)
+    # 桁落ちを避けるため、一時的にnm, nN単位に変換
+    force_nm = force * 1e9
+    z_distance_nm = z_distance * 1e9
+
+    n_points = len(force_nm)
     if n_points < 50: # データ点が少なすぎる
-        return np.argmax(force) # フォールバック: 最大点をCPとする (苦肉の策)
+        return np.argmax(force_nm) # フォールバック: 最大点をCPとする (苦肉の策)
     # ローパスフィルタ (移動平均)
     window_size = max(5, n_points // 50)  # データ点数の2%または5点、どちらか大きい方
-    force = np.convolve(force, np.ones(window_size)/window_size, mode='same')
+    force_nm = ndimage.uniform_filter1d(force_nm, size=window_size, mode='nearest')
     
     # 直線の2点
-    x1, y1 = z_distance[0], force[0]
-    x2, y2 = z_distance[np.argmax(force)], force[np.argmax(force)]
+    x1, y1 = z_distance_nm[0], force_nm[0]
+    x2, y2 = z_distance_nm[np.argmax(force_nm)], force_nm[np.argmax(force_nm)]
 
     # 直線の方程式: Ax + By + C = 0
     A = y2 - y1
@@ -80,10 +86,11 @@ def calc_touch_point(force: np.ndarray, z_distance: np.ndarray) -> int:
     # ゼロ除算を防ぐ（2点が同じ位置にある場合のフォールバック）
     if denominator < 1e-10:
         # 2点が同じ位置 → 距離計算できないので最大値を返す
-        touch_index = np.argmax(force)
+        touch_index = np.argmax(force_nm)
+        touch_index = np.argmin(force_nm)
     else:
         # 各点から直線までの距離を計算
-        distances = np.abs(A * z_distance + B * force + C) / denominator
+        distances = np.abs(A * z_distance_nm + B * force_nm + C) / denominator
         touch_index = np.argmax(distances)
 
     return touch_index
