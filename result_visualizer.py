@@ -2,10 +2,13 @@ import numpy as np
 import matplotlib.pyplot as plt
 import os
 from typing import List, Dict, Any, Tuple
+
+from sympy import Trace
 from afm_data import AFMData
 from skimage.filters import threshold_otsu 
-from scipy.ndimage import median_filter, gaussian_filter
+from scipy.ndimage import median_filter, gaussian_filter, shift
 import interpolator_linear
+from scipy.signal import correlate
 
 class AFM_Result_Visualizer:
     """
@@ -77,12 +80,12 @@ class AFM_Result_Visualizer:
             'fname': "map.png",
             'log_transform': False
         }
+
+        self.best_lag = 0
         
     def _get_plot_config(self, property_key: str) -> Dict[str, Any]:
         """指定されたプロパティのプロット設定を取得する。"""
         return self.PLOT_CONFIG.get(property_key, self.DEFAULT_CONFIG)
-
-    # --- 補助メソッド ---
 
     def _get_map_dimensions(self, data_list: List[AFMData]) -> tuple:
         """メタデータからマップのXStepとYStepを取得する。"""
@@ -194,8 +197,6 @@ class AFM_Result_Visualizer:
             
         return corrected_data
     
-    import numpy as np
-
     def _remove_scan_line_noise(self, image_data, method='median', window_ratio=0.2):
         """
         縦方向の地形変化（うねり・段差）を保護しつつ、横縞ノイズを除去する関数。
@@ -230,7 +231,7 @@ class AFM_Result_Visualizer:
             sigma = 1.0
 
         # 3. トレンド（本来の縦方向の変化）を抽出
-        # 【変更点】median_filterだとトレンドが階段状になるため、
+        # median_filterだとトレンドが階段状になるため、
         #  滑らかな gaussian_filter を使用します。
         #  これにより「オフセットの急激な変化」だけが浮き彫りになります。
         smooth_trend = gaussian_filter(offsets, sigma=sigma)
@@ -244,6 +245,75 @@ class AFM_Result_Visualizer:
         
         return corrected
     
+    def _create_2Darray_map(
+            self,
+            property_key: str,
+            X_coords_um: np.ndarray,
+            Y_coords_um: np.ndarray,
+            Z_values: np.ndarray,
+            grid_size: Tuple[int, int] = (512, 512),
+            ):
+            # 線形補間オブジェクトの作成
+            Z_grid = interpolator_linear.afm_to_grid_linear(X_coords_um, Y_coords_um, Z_values, pixel_shape=grid_size)
+            # topographyの場合、一次元平面でフィッティングして全体の傾斜を補正する。また、高さも反転させ、実際のトポグラフィーに合わせる。
+            if property_key == 'topography':
+                Z_grid = self._flatten_plane(Z_grid)
+                Z_grid = np.max(Z_grid) - Z_grid  # 高さを反転
+                Z_grid -= np.min(Z_grid)  # 最小値を0にシフト
+
+            # ラインレベリングを実施
+            Z_grid = self._remove_scan_line_noise(Z_grid, method='median')
+            return Z_grid
+    
+    def _calc_correlate(self,trace,retrace):
+        # 1. 相互相関によるX方向のズレ（ラグ）検出
+        # 行ごとにズレを計算するのはノイズに弱いため、画像全体の平均プロファイルで計算します
+        trace_profile = np.nanmean(trace, axis=0)
+        retrace_profile = np.nanmean(retrace, axis=0)
+        
+        # 欠損がある場合は0埋め等で仮定して相関をとる
+        trace_prof_filled = np.nan_to_num(trace_profile)
+        retrace_prof_filled = np.nan_to_num(retrace_profile)
+        
+        # 相関計算
+        correlation = correlate(trace_prof_filled, retrace_prof_filled, mode='same')
+        lags = np.arange(-len(trace_profile)//2 + 1, len(trace_profile)//2 + 1)
+        
+        # 相関がサイズ不一致でズレる場合の微調整
+        if len(lags) != len(correlation):
+            lags = np.arange(len(correlation)) - (len(correlation) // 2)
+            
+        best_lag = lags[np.argmax(correlation)]
+        print(f"検出された復路のズレ: {best_lag} ピクセル")
+        return best_lag
+
+    def _merge_afm_data(self, trace, retrace, best_lag=None, outlier_threshold=None):
+        """
+        往路(trace)と復路(retrace)の位置ズレを補正し、
+        欠損(NaN)や外れ値を考慮して統合した画像を返します。
+        Young率などは、往復で大きく異なることがあるため、Heightの時のみ差を計算する。
+        それ以外のマップの際は、計算した値を使用する。
+        """
+
+        # 2. 復路データの位置補正
+        # X方向（axis=1）にのみシフトさせる
+        retrace_shifted = shift(retrace, [0, best_lag], cval=np.nan, order=1)
+
+        # 3. データの統合（マージ）
+        # 空振り対策: 異常値フィルタリング（オプション）
+        # 例: 平均から大きく外れている、あるいは物理的にありえない値をNaNにする
+        if outlier_threshold is not None:
+            # 簡易的な例: 値が極端に小さい/大きいものを除外
+            trace[trace < outlier_threshold] = np.nan
+            retrace_shifted[retrace_shifted < outlier_threshold] = np.nan
+
+        # 統合ロジック
+        # - 両方データがある場所 -> 平均
+        # - 片方しかデータがない場所（空振り/シフトによる空白） -> ある方を採用
+        # - 両方ない場所 -> NaN
+        merged_data = np.nanmean(np.stack([trace, retrace_shifted]), axis=0)
+        return merged_data
+    
     # --- 保存メソッド ---
 
     def create_and_save_high_resolution_map(
@@ -252,7 +322,8 @@ class AFM_Result_Visualizer:
         property_key: str,
         output_dir: str, 
         grid_size: Tuple[int, int] = (512, 512),
-        range_threshold: float = 30.0
+        range_threshold: float = 30.0,
+        only_trace: bool = True
     ):
         """
         RBF補間を用いて高解像度マップを生成し、PNG画像とNPZ 2D配列として保存する。
@@ -264,18 +335,43 @@ class AFM_Result_Visualizer:
 
         os.makedirs(output_dir, exist_ok=True)
         config = self._get_plot_config(property_key)
-        
+
         # 1. 座標データ (センサー値) とZ値（解析結果）を抽出
         X_coords_um, Y_coords_um, x_range_um, y_range_um = self._extract_physical_coords(data_list)
         N_total = len(data_list)
         nx, ny = self._get_map_dimensions(data_list)
-
         try:
             Z_values = np.array([getattr(data_obj, property_key) for data_obj in data_list])
         except AttributeError:
             print(f"エラー: AFMDataオブジェクトに属性 '{property_key}' が見つかりません。")
             return
         
+
+        # 往路方向（X座標が増加）と復路方向（X座標が減少）のデータを分別
+        trace_indices = []
+        retrace_indices = []
+        
+        for idx in range(len(X_coords_um) - 1):
+            if X_coords_um[idx + 1] >= X_coords_um[idx]:
+                # X座標が増加 → 往路
+                trace_indices.append(idx)
+            else:
+                # X座標が減少 → 復路
+                retrace_indices.append(idx)
+        
+        # 最後の点の処理
+        if len(X_coords_um) > 0:
+            last_idx = len(X_coords_um) - 1
+            # 最後の点は最後の方向に追加
+            if len(trace_indices) > 0 and trace_indices[-1] == last_idx - 1:
+                trace_indices.append(last_idx)
+            elif len(retrace_indices) > 0 and retrace_indices[-1] == last_idx - 1:
+                retrace_indices.append(last_idx)
+            else:
+                # デフォルトは往路に追加
+                trace_indices.append(last_idx)
+
+
         # 2. 1ラインスキャン判定とRBF補間用のY座標設定
         is_line_scan_by_range = self._is_line_scan_by_range(x_range_um, y_range_um, range_threshold)
         
@@ -297,33 +393,22 @@ class AFM_Result_Visualizer:
         else:
             y_range_plot = y_range_um
             x_range_plot = x_range_um
+        
+        # 往路、復路でそれぞれマップを生成
+        Z_grid_trace = self._create_2Darray_map(
+            property_key, X_coords_um[trace_indices], Y_coords_um[trace_indices], Z_values[trace_indices], grid_size=grid_size
+        )
+        Z_grid_retrace = self._create_2Darray_map(
+            property_key, X_coords_um[retrace_indices], Y_coords_um[retrace_indices], Z_values[retrace_indices], grid_size=grid_size
+        )
 
-        # ヤング率解析不良データを削除
-        if property_key == 'youngs_modulus':
-            # 大津の方法を用いて、空振り判定の押し込み量を算出
-            Delta_values = np.array([getattr(data_obj, 'delta', np.nan) for data_obj in data_list])
-            thres_delta = threshold_otsu(Delta_values[~np.isnan(Delta_values)]) * 0.5 # 係数に関しては実験的に調整
-            data_list = [data for data in data_list if getattr(data, 'delta', np.nan) >= thres_delta]# 押し込み過少なデータを削除
+        # 往路、復路データをマージ
+        if property_key == 'topography': # トポ像はぶれが少ないので、位置合わせにはトポ像を使用
+            self.best_lag = self._calc_correlate(Z_grid_trace, Z_grid_retrace)
+        Z_grid = self._merge_afm_data(Z_grid_trace, Z_grid_retrace, best_lag=self.best_lag)
 
-            filtered_length = len(data_list)
-            if filtered_length == 0:
-                print("❌ 有効なヤング率データがありません。処理を中止します。")
-                return
-            
-        # 線形補間オブジェクトの作成
-        Z_grid = interpolator_linear.afm_to_grid_linear(X_coords_um, Y_coords_um, Z_values, pixel_shape=grid_size)
-        # topographyの場合、一次元平面でフィッティングして全体の傾斜を補正する。また、高さも反転させ、実際のトポグラフィーに合わせる。
-        if property_key == 'topography':
-            Z_grid = self._flatten_plane(Z_grid)
-            Z_grid = np.max(Z_grid) - Z_grid  # 高さを反転
-            Z_grid -= np.min(Z_grid)  # 最小値を0にシフト
-
-        # ラインレベリングを実施
-        Z_grid = self._remove_scan_line_noise(Z_grid, method='median')
-            
-        # 4. 2Dマップ配列 (.npz) の保存
+        # 2Dマップ配列 (.npz) の保存
         map_npz_path = os.path.join(output_dir, f'{property_key}_map.npz')
-        # Z_gridは補間後の高解像度データ
         np.savez_compressed(
             map_npz_path, 
             map_data=Z_grid, 
@@ -332,16 +417,13 @@ class AFM_Result_Visualizer:
             x_range_um=x_range_plot, y_range_um=y_range_plot
         )
         print(f"✅ 2Dマップ配列 (.npz) を保存: {map_npz_path}")
-
-        # 5. 画像 (.png) の保存
+        #画像 (.png) の保存
         conversion_factor = self.UNIT_CONVERSION.get(property_key, 1.0)
-        
         plot_data = Z_grid * conversion_factor
         if config['log_transform']:
             plot_data = np.log10(np.maximum(plot_data, 1e-12))
         
         plt.figure(figsize=(8, 8))
-        
         # extent=[X_min, X_max, Y_min, Y_max]
         median = np.median(plot_data)
         q75, q25 = np.percentile(plot_data, [75, 25])
@@ -401,4 +483,3 @@ class AFM_Result_Visualizer:
         print(f"✅ 解析データNPZ (1D配列) を保存: {npz_path}")
 
 
-    

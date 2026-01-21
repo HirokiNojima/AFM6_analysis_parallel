@@ -1,36 +1,56 @@
 import numpy as np
-from scipy.interpolate import LinearNDInterpolator, NearestNDInterpolator
+from scipy.interpolate import NearestNDInterpolator
 
 def afm_to_grid_linear(x_sensor, y_sensor, values, pixel_shape=(256, 256)):
     """
-    AFMデータ用 ハイブリッド補間関数。
-    (Linear Interpolation + Nearest Neighbor Fill)
+    AFMデータ用 最近傍法補間関数。
+    
+    1. 入力データのNaN位置を記録して保持する
+    2. 各グリッド点を、最も近いデータ点の値で埋める
+    3. 入力に含まれていたNaNは補間後も保たれる
     
     【特徴】
-    1. メイン処理: Delaunay三角分割による線形補間（微細構造を保存）。
-    2. 外挿処理: 外側のNaN領域を最近傍法（Nearest Neighbor）で埋める。
-       -> これにより、画像四隅の欠損を防ぎ、かつ急激な値を生成しません。
+    1. メイン処理: 最近傍法による補間（計算高速、不連続特性を保存）。
+    2. 入力データ品質を保証: 元々のNaNデータは一貫性を保つ。
 
     Parameters:
     ----------
     x_sensor, y_sensor : array-like
         センサー座標データ
     values : array-like
-        測定値 (高さデータなど)
+        測定値 (高さデータなど)。NaN値を含む場合がある。
     pixel_shape : tuple
         出力画像サイズ (Height, Width)
+        
+    Returns:
+    -------
+    grid_z : ndarray
+        補間後の2D格子データ (float32)
     """
     # 1. 入力データのサニタイズ（1次元化）
     x = np.asarray(x_sensor).ravel()
     y = np.asarray(y_sensor).ravel()
     z = np.asarray(values).ravel()
 
-    # (N, 2) の座標配列を作成
-    points = np.column_stack((x, y))
+    # 【改良】入力データのNaN位置を記録
+    input_nan_mask = np.isnan(z)
+    n_input_nans = input_nan_mask.sum()
+    
+    # 補間用には、NaNを含まない有効なデータのみを使用
+    valid_mask = ~input_nan_mask
+    if valid_mask.sum() == 0:
+        raise ValueError("有効なデータ点がありません（すべてNaN）。")
+    
+    x_valid = x[valid_mask]
+    y_valid = y[valid_mask]
+    z_valid = z[valid_mask]
+
+    # (N, 2) の座標配列を作成（有効なデータのみ）
+    points = np.column_stack((x_valid, y_valid))
 
     # 2. ターゲットグリッド座標の作成
-    x_min, x_max = np.min(x), np.max(x)
-    y_min, y_max = np.min(y), np.max(y)
+    x_min, x_max = np.min(x_valid), np.max(x_valid)
+    y_min, y_max = np.min(y_valid), np.max(y_valid)
     
     grid_x = np.linspace(x_min, x_max, pixel_shape[1])
     grid_y = np.linspace(y_min, y_max, pixel_shape[0])
@@ -38,23 +58,35 @@ def afm_to_grid_linear(x_sensor, y_sensor, values, pixel_shape=(256, 256)):
     # メッシュグリッド作成
     xx, yy = np.meshgrid(grid_x, grid_y)
 
-    # 3. 線形補間 (Delaunay三角分割) の実行
-    # fill_value=np.nan にして、外挿領域を明確に区別します
-    interp_linear = LinearNDInterpolator(points, z, fill_value=np.nan)
-    grid_z = interp_linear(xx, yy)
+    # 3. 最近傍法補間の実行
+    interp_nearest = NearestNDInterpolator(points, z_valid)
+    grid_z = interp_nearest(xx, yy)
 
-    # 4. NaN領域（外挿部分）の穴埋め処理
-    if np.isnan(grid_z).any():
+    # 【改良】入力データのNaN位置の再現
+    # 元データのNaN位置を、グリッド上で推定してNaN化する
+    if n_input_nans > 0:
+        # 入力データのNaN位置の座標を取得
+        x_input_nans = x[input_nan_mask]
+        y_input_nans = y[input_nan_mask]
         
-        # NearestNDInterpolator は全領域で値を返せる（NaNにならない）
-        interp_nearest = NearestNDInterpolator(points, z)
-        grid_z_nearest = interp_nearest(xx, yy)
+        # グリッド座標に変換（インデックス）
+        x_indices = np.digitize(x_input_nans, grid_x) - 1
+        y_indices = np.digitize(y_input_nans, grid_y) - 1
         
-        # 線形補間が NaN だった場所だけ、Nearestの結果で上書きする
-        nan_mask = np.isnan(grid_z)
-        grid_z[nan_mask] = grid_z_nearest[nan_mask]
+        # グリッド範囲内の点だけをマスク処理
+        valid_grid_mask = (
+            (x_indices >= 0) & (x_indices < pixel_shape[1]) &
+            (y_indices >= 0) & (y_indices < pixel_shape[0])
+        )
+        
+        x_indices = x_indices[valid_grid_mask]
+        y_indices = y_indices[valid_grid_mask]
+        
+        # グリッド上でそれらの位置をNaNに設定
+        grid_z[y_indices, x_indices] = np.nan
 
-    return grid_z
+    return grid_z.astype(np.float32)
+
 
 if __name__ == "__main__":
     import matplotlib.pyplot as plt
@@ -87,7 +119,7 @@ if __name__ == "__main__":
 
     plt.imshow(img, extent=(0, 10, 0, 10), origin='lower', cmap=current_cmap, interpolation='nearest')
     plt.colorbar(label='Height')
-    plt.title('Linear Interpolation Result\n(Sharp edges are preserved)')
+    plt.title('Nearest Neighbor Interpolation Result\n(NaN preservation)')
     plt.xlabel('X')
     plt.ylabel('Y')
     

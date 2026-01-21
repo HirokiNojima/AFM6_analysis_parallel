@@ -94,14 +94,13 @@ def main_analysis_workflow(
     # 高解像度マップの生成と保存
     print(f"--- 🗺️ 高解像度マップの生成と保存中 ---")
     analysis_properties = [
+        'topography',
         'youngs_modulus', 
-        'topography', 
         'peak_force', 
         'delta', 
         'cp_z_position', 
         'hysteresis_area'
     ]
-    
     for prop in analysis_properties:
         try:
             result_visualizer.create_and_save_high_resolution_map(
