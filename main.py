@@ -1,3 +1,4 @@
+#%%
 import os
 import time
 from pathlib import Path
@@ -120,7 +121,7 @@ def main_analysis_workflow(
     print(f"⏱️ 実行時間: {total_time:.2f} 秒")
     print(f"==================================================")
 
-
+#%%
 # --- 実行ブロック ---
 if __name__ == '__main__':
     # データフォルダパス
@@ -130,7 +131,7 @@ if __name__ == '__main__':
     invols_nm_per_volt = float(input("input InvOLS (nm/V): "))
     
     # 高解像度マップのグリッドサイズ
-    map_grid_size = [512, 512] 
+    map_grid_size = [300, 300] 
     
     # 並列処理のコア数 (-1: 全コア)
     num_jobs = -1 
@@ -142,3 +143,22 @@ if __name__ == '__main__':
         grid_size=map_grid_size,
         n_jobs=num_jobs
     )
+
+
+# %% 親フォルダからすべて解析する場合
+mother_folder = r"C:\nojima\AFM6measurement\260115_骨広範囲計測"
+import os 
+invOLS = 100
+map_grid_size = [512, 512]
+num_jobs = -1
+for folder_name in os.listdir(mother_folder):
+    print(f"Processing folder: {os.path.join(mother_folder, folder_name)}")
+    main_analysis_workflow(
+        folder_path=os.path.join(mother_folder, folder_name), 
+        invols=invOLS,
+        output_dir_name="AFM_Analysis_Results",
+        grid_size=map_grid_size,
+        n_jobs=num_jobs
+    )
+
+# %%
