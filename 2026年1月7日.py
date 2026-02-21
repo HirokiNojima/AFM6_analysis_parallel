@@ -22,3 +22,6 @@ import matplotlib.pyplot as plt
 plt.plot(data['map_data'][300, :])
 plt.show()
 # %%
+data = np.load(r"C:\nojima\AFM6measurement\260121\1840_0\AFM_Analysis_Results\youngs_modulus_map.npz")
+plt.plot(data['map_data'][511, :])
+# %%
