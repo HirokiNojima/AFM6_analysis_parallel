@@ -235,7 +235,7 @@ def _find_quietest_region_idx(force: np.ndarray, window_size: int) -> int:
     return max(0, min_std_idx_start)
 
 # %%
-def baseline_correction(force, z_distance, basefit_range_ratio=0.5):
+def baseline_correction(force, z_distance):
     """
     フォースカーブのベースライン補正を行う。
     最も静かな（ノイズが小さい）領域を自動検出し、そこをベースラインとしてフィッティングする。

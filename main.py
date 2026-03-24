@@ -1,4 +1,5 @@
 
+#%%
 import os
 import time
 from pathlib import Path
@@ -42,14 +43,12 @@ def main_analysis_workflow(
     os.makedirs(output_path, exist_ok=True)
 
     print(f"==================================================")
-    print(f"🚀 AFM Force Map Analysis Started")
     print(f"📁 Data Folder: {folder_path}")
     print(f"📈 InvOLS: {invols:.2f} nm/V")
     print(f"💾 Output Folder: {output_path.resolve()}")
     print(f"==================================================")
 
     # 2. データ読み込み (DataReader: マスターの役割)
-    print(f"--- 📥 メタデータとカーブ総数の読み込み中 ---")
     try:
         data_reader = DataReader()
         # configを読み込み、カーブ総数とメタデータを取得
@@ -64,10 +63,8 @@ def main_analysis_workflow(
     except Exception as e:
         print(f"❌ データ読み込み中にエラーが発生しました: {e}")
         return
-    print(f"--- ✅ メタデータ読み込み完了: 全 {N_curves} カーブ ---")
 
     # 3. フォースカーブの並列解析 (AFM_Map_Analyzer_Joblib: ワーカーの役割)
-    print(f"--- 🔬 フォースマップ解析中 (並列処理: n_jobs={n_jobs}) ---")
     try:
         map_analyzer = AFM_Map_Analyzer_Joblib(
             n_jobs=n_jobs,
@@ -86,14 +83,12 @@ def main_analysis_workflow(
     result_visualizer = AFM_Result_Visualizer()
 
     # 解析結果 (1D配列) のNPZ保存
-    print(f"--- 💾 解析データのNPZ保存中 ---")
     result_visualizer.export_analysis_data_npz(
         analyzed_data_list,
         str(output_path)
     )
 
     # 高解像度マップの生成と保存
-    print(f"--- 🗺️ 高解像度マップの生成と保存中 ---")
     analysis_properties = [
         'topography',
         'youngs_modulus', 
@@ -120,17 +115,18 @@ def main_analysis_workflow(
     print(f"✅ 全解析プロセスが完了しました。")
     print(f"⏱️ 実行時間: {total_time:.2f} 秒")
     print(f"==================================================")
-
+#%%
 # --- 実行ブロック ---
 if __name__ == '__main__':
     # データフォルダパス
     folder_path = input("input data folder path: ")
     
     # 光てこ感度 [nm/V]
-    invols_nm_per_volt = float(input("input InvOLS (nm/V): "))
+    #invols_nm_per_volt = float(input("input InvOLS (nm/V): "))
+    invols_nm_per_volt = 1305.9960827018056 
     
     # 高解像度マップのグリッドサイズ
-    map_grid_size = [300, 300] 
+    map_grid_size = [1024, 1024] 
     
     # 並列処理のコア数 (-1: 全コア)
     num_jobs = -1 
@@ -142,22 +138,20 @@ if __name__ == '__main__':
         grid_size=map_grid_size,
         n_jobs=num_jobs
     )
-
-
-# # %% 親フォルダからすべて解析する場合
-# mother_folder = r"C:\nojima\AFM6measurement\260129"
-# import os 
-# invOLS = 100
-# map_grid_size = [300, 300]
-# num_jobs = -1
-# for folder_name in os.listdir(mother_folder):
-#     print(f"Processing folder: {os.path.join(mother_folder, folder_name)}")
-#     main_analysis_workflow(
-#         folder_path=os.path.join(mother_folder, folder_name), 
-#         invols=invOLS,
-#         output_dir_name="AFM_Analysis_Results",
-#         grid_size=map_grid_size,
-#         n_jobs=num_jobs
-#     )
+#%%
+mother_folder = r"C:\nojima\AFM6measurement\260324_ズーム計測、相対速度ゼロ\ズーム計測"
+import os 
+invOLS = 1305.9960827018056 
+map_grid_size = [1024, 1024]
+num_jobs = -1
+for folder_name in os.listdir(mother_folder):
+    print(f"Processing folder: {os.path.join(mother_folder, folder_name)}")
+    main_analysis_workflow(
+        folder_path=os.path.join(mother_folder, folder_name), 
+        invols=invOLS,
+        output_dir_name="AFM_Analysis_Results",
+        grid_size=map_grid_size,
+        n_jobs=num_jobs
+    )
 
 # %%

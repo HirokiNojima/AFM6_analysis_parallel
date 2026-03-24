@@ -37,7 +37,9 @@ class AFM_Curve_analyzer:
         """
         フォースカーブのベースライン補正を行う。
         """
-        data_obj.force_corrected = afm.baseline_correction(data_obj.force, data_obj.z_distance)
+        #data_obj.force_corrected = afm.baseline_correction(data_obj.force, data_obj.z_distance)
+        data_obj.force_corrected = data_obj.force - np.min(data_obj.force) # ベースラインをゼロに補正
+        
 
     def _calc_CPandRP(self, data_obj: AFMData):
         """

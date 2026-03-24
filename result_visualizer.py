@@ -114,12 +114,9 @@ class AFM_Result_Visualizer:
         if not data_list:
             return np.array([]), np.array([]), 0.0, 0.0
 
-        print('データリスト長さ確認', data_list[1].xsensor)
-
         # AFMDataのxsensor, ysensor属性から直接座標を取得
         X_coords = np.array([data_obj.xsensor for data_obj in data_list])
         Y_coords = np.array([data_obj.ysensor for data_obj in data_list])
-        print('抽出座標形状確認', X_coords.shape, Y_coords.shape)
 
         # すべてをマイクロメートル [um] 単位に変換
         X_coords_um = X_coords * 1e6
@@ -153,9 +150,10 @@ class AFM_Result_Visualizer:
 
         return ratio > threshold
     
-    def _flatten_plane(self, data_2d):
+    def _flatten_surface_2nd_order(self, data_2d):
         """
-        2次元配列に対して、面でのフィッティングを行い、全体の傾斜を補正する。
+        2次元配列に対して2次曲面フィッティングを行い、全体の傾斜および
+        ピエゾ特有のボウイング（湾曲）を補正する。
         
         Parameters:
             data_2d (np.ndarray): 補正前の2次元高さデータ (Height Map)
@@ -163,39 +161,108 @@ class AFM_Result_Visualizer:
         Returns:
             np.ndarray: 補正後のデータ
         """
-        # 入力データのコピーを作成（元データを破壊しないため）
+        # 入力データのコピーを作成
         corrected_data = data_2d.copy()
         
-        # 画像のサイズを取得 (高さ: rows, 幅: cols)
+        # 画像のサイズを取得
         rows, cols = corrected_data.shape
         
-        # X軸の座標配列を作成 (0, 1, 2, ... cols-1)
+        # X軸, Y軸の座標配列を作成
         x = np.arange(cols)
-
-
-        # Fit and subtract a first-order plane z = a*x + b*y + c from the entire 2D map
-        # X: columns (0..cols-1), Y: rows (0..rows-1)
         y = np.arange(rows)
-        X_mesh, Y_mesh = np.meshgrid(x, y)  # shape (rows, cols)
+        X_mesh, Y_mesh = np.meshgrid(x, y)
 
         Z = corrected_data.astype(np.float64)
         Z_flat = Z.ravel()
         X_flat = X_mesh.ravel()
         Y_flat = Y_mesh.ravel()
 
+        # NaNやInfを除外するマスクを作成
         mask = np.isfinite(Z_flat)
-        if mask.sum() < 3:
-            # Not enough valid points to fit a plane; return original copy
+        
+        # 2次曲面のフィッティングには最低6点の有効なデータが必要
+        if mask.sum() < 6:
             return corrected_data
 
-        A = np.column_stack((X_flat[mask], Y_flat[mask], np.ones(mask.sum())))
+        # 計画行列の作成 (X^2, Y^2, XY, X, Y, 1)
+        A = np.column_stack((
+            X_flat[mask]**2, 
+            Y_flat[mask]**2, 
+            X_flat[mask] * Y_flat[mask], 
+            X_flat[mask], 
+            Y_flat[mask], 
+            np.ones(mask.sum())
+        ))
+        
+        # 最小二乗法で係数 (a, b, c, d, e, f) を算出
         coeffs, *_ = np.linalg.lstsq(A, Z_flat[mask], rcond=None)
-        a, b, c = coeffs
+        a, b, c, d, e, f = coeffs
 
-        plane = (a * X_mesh + b * Y_mesh + c)
-        corrected_data = Z - plane
+        # 求められた係数から2次曲面モデルを構築
+        surface = (a * X_mesh**2 + b * Y_mesh**2 + c * X_mesh * Y_mesh + 
+                   d * X_mesh + e * Y_mesh + f)
+        
+        # 元のデータから2次曲面のうねりを差し引く
+        corrected_data = Z - surface
             
         return corrected_data
+    
+
+    def _remove_scan_line_noise_zero(self, image_data):
+        """
+            各行の中央値（メディアン）を計算し、一律に差し引く（0次ラインレベリング）。
+            複雑なうねり、帯状のノイズ、突発的なZドリフトを完全に除去します。
+        """
+        corrected = image_data.copy()
+
+        # 1. 各行の中央値を計算 (構造の凸凹に引っ張られないよう、平均ではなくメディアンを使用)
+        row_medians = np.median(corrected, axis=1)
+        
+        # NaNやInf対策（もし含まれている場合）
+        row_medians = np.nan_to_num(row_medians, nan=0.0)
+        
+        # 2. 各行からその行の中央値を差し引く
+        # reshape(-1, 1)で縦ベクトルにし、ブロードキャストで全列から引く
+        corrected = corrected - row_medians.reshape(-1, 1)
+        
+        return corrected
+    
+    def highpass_filter_2d_directional(self, Z, cutoff_frequency = 0.005, direction='x'):
+        """
+        高速フーリエ変換を用いて特定の方向の高周波成分を抽出する関数
+        Z: 2D numpy array of shape (M, N) representing the height map
+        cutoff_frequency: カットオフ周波数 (0 < cutoff_frequency < 0.5)
+        direction: 'x' または 'y' でフィルタリングする方向を指定
+        return: 2D numpy array of shape (M, N) representing the directional high-pass filtered height map
+        """
+        M, N = Z.shape
+        
+        # 2次元FFTを計算
+        Z_fft = np.fft.fft2(Z)
+        
+        # 周波数のグリッドを作成
+        u = np.fft.fftfreq(N)
+        v = np.fft.fftfreq(M)
+        U, V = np.meshgrid(u, v)
+        
+        # 周波数の大きさを計算
+        if direction == 'x':
+            D = np.abs(U)
+        elif direction == 'y':
+            D = np.abs(V)
+        else:
+            raise ValueError("Direction must be 'x' or 'y'")
+        
+        # ハイパスフィルタを作成
+        H = D > cutoff_frequency
+        
+        # フィルタを適用
+        Z_fft_filtered = Z_fft * H
+        
+        # 逆FFTで空間領域に戻す
+        Z_filtered = np.fft.ifft2(Z_fft_filtered).real
+        
+        return Z_filtered
     
     def _remove_scan_line_noise(self, image_data, method='median', window_ratio=0.2):
         """
@@ -246,24 +313,25 @@ class AFM_Result_Visualizer:
         return corrected
     
     def _create_2Darray_map(
-            self,
-            property_key: str,
-            X_coords_um: np.ndarray,
-            Y_coords_um: np.ndarray,
-            Z_values: np.ndarray,
-            grid_size: Tuple[int, int] = (512, 512),
-            ):
-            # 線形補間オブジェクトの作成
-            Z_grid = interpolator_linear.afm_to_grid_linear(X_coords_um, Y_coords_um, Z_values, pixel_shape=grid_size)
-            # topographyの場合、一次元平面でフィッティングして全体の傾斜を補正する。また、高さも反転させ、実際のトポグラフィーに合わせる。
-            if property_key == 'topography':
-                Z_grid = self._flatten_plane(Z_grid)
-                Z_grid = np.max(Z_grid) - Z_grid  # 高さを反転
-                Z_grid -= np.min(Z_grid)  # 最小値を0にシフト
+        self,
+        property_key: str,
+        X_coords_um: np.ndarray,
+        Y_coords_um: np.ndarray,
+        Z_values: np.ndarray,
+        grid_size: Tuple[int, int] = (512, 512),
+        ):
+        # 線形補間オブジェクトの作成
+        Z_grid = interpolator_linear.afm_to_grid_linear(X_coords_um, Y_coords_um, Z_values, pixel_shape=grid_size)
+        # topographyの場合、2次曲面フィッティングで全体の傾斜およびボウイングを補正する。また、高さも反転させ、実際のトポグラフィーに合わせる。
+        if property_key == 'topography':
+            Z_grid = self._flatten_surface_2nd_order(Z_grid)
+            Z_grid = np.max(Z_grid) - Z_grid  # 高さを反転
+            Z_grid -= np.min(Z_grid)  # 最小値を0にシフト
+            Z_grid = self.highpass_filter_2d_directional(Z_grid, cutoff_frequency=0.005, direction='x')  # X方向の高周波成分を抽出
 
             # ラインレベリングを実施
-            Z_grid = self._remove_scan_line_noise(Z_grid, method='median')
-            return Z_grid
+            #Z_grid = self._remove_scan_line_noise_zero(Z_grid)
+        return Z_grid
     
     def _calc_correlate(self,trace,retrace):
         # 1. 相互相関によるX方向のズレ（ラグ）検出
@@ -284,7 +352,6 @@ class AFM_Result_Visualizer:
             lags = np.arange(len(correlation)) - (len(correlation) // 2)
             
         best_lag = lags[np.argmax(correlation)]
-        print(f"検出された復路のズレ: {best_lag} ピクセル")
         return best_lag
 
     def _merge_afm_data(self, trace, retrace, best_lag=None, outlier_threshold=None):
@@ -416,7 +483,6 @@ class AFM_Result_Visualizer:
             y_min=Y_coords_um.min(), y_max=Y_coords_um.max(), # 1ラインスキャン時はダミーのパス番号のmin/max
             x_range_um=x_range_plot, y_range_um=y_range_plot
         )
-        print(f"✅ 2Dマップ配列 (.npz) を保存: {map_npz_path}")
         #画像 (.png) の保存
         conversion_factor = self.UNIT_CONVERSION.get(property_key, 1.0)
         plot_data = Z_grid * conversion_factor
@@ -455,7 +521,6 @@ class AFM_Result_Visualizer:
             
         plt.savefig(image_path, dpi=300, bbox_inches='tight')
         plt.close()
-        print(f"✅ 高解像度画像 (.png) を保存: {image_path}")
 
     def export_analysis_data_npz(self, data_list: List[AFMData], output_dir: str):
         """
@@ -480,6 +545,5 @@ class AFM_Result_Visualizer:
         npz_path = os.path.join(output_dir, f'analysis_data.npz')
         # np.savez_compressed を使用
         np.savez_compressed(npz_path, **data_to_save)
-        print(f"✅ 解析データNPZ (1D配列) を保存: {npz_path}")
 
 

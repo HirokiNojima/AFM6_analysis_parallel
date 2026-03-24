@@ -58,7 +58,7 @@ class DataReader:
         if result['カンチレバー種類'] == 'AC40':
             result['SPRING_CONSTANT'] = 0.1  # N/m
         elif result['カンチレバー種類'] == 'AC240':
-            result['SPRING_CONSTANT'] = 2.0  # N/m
+            result['SPRING_CONSTANT'] = 2  # N/m 
         elif result['カンチレバー種類'] == 'AC160':
             result['SPRING_CONSTANT'] = 42.0  # N/m
         else:
@@ -117,7 +117,11 @@ class DataReader:
         files = [("Xsensors.txt", "X"), ("Ysensors.txt", "Y")]
         values = {}
         for fname, key in files:
-            path = os.path.join(folder_path, fname)
+            if key == 'P':
+                print('Yセンサ生成')
+                path = r"C:\nojima\AFM6measurement\260226\マッピング計測＋α\1704_5\Ysensors.txt"
+            else:
+                path = os.path.join(folder_path, fname)
             if not os.path.isfile(path):
                 raise FileNotFoundError(f'指定されたファイルが見つかりません: {path}')
             try:

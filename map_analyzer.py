@@ -87,13 +87,13 @@ class AFM_Map_Analyzer_Joblib:
         """
         
         actual_jobs = cpu_count() if self.n_jobs == -1 else self.n_jobs
-        print(f"--- 🚀 フォースマップ解析開始 (joblib並列処理, n_jobs={actual_jobs}) ---")
 
         # 0 から N_curves-1 までのインデックスリストを生成
         all_indices = list(range(N_curves))
         
         # データリストをチャンクに分割
         chunk_size = 200 # チャンクサイズは実験的に調整
+        print("chunk_size:")
         data_chunks = [
             all_indices[i:i + chunk_size] 
             for i in range(0, N_curves, chunk_size)
